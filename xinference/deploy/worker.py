@@ -32,6 +32,7 @@ async def start_worker_components(
     main_pool: MainActorPoolType,
     metrics_exporter_host: Optional[str],
     metrics_exporter_port: Optional[int],
+    role: Optional[str] = "decode",
 ):
     gpu_device_indices = []
     cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", None)
@@ -43,6 +44,7 @@ async def start_worker_components(
     await xo.create_actor(
         WorkerActor,
         address=address,
+        role=role,
         uid=WorkerActor.default_uid(),
         supervisor_address=supervisor_address,
         main_pool=main_pool,
@@ -57,6 +59,7 @@ async def _start_worker(
     supervisor_address: str,
     metrics_exporter_host: Optional[str] = None,
     metrics_exporter_port: Optional[int] = None,
+    role: Optional[str] = "decode",
     logging_conf: Any = None,
 ):
     from .utils import create_worker_actor_pool
@@ -68,6 +71,7 @@ async def _start_worker(
         main_pool=pool,
         metrics_exporter_host=metrics_exporter_host,
         metrics_exporter_port=metrics_exporter_port,
+        role=role,
     )
     await pool.join()
 
@@ -77,8 +81,10 @@ def main(
     supervisor_address: str,
     metrics_exporter_host: Optional[str] = None,
     metrics_exporter_port: Optional[int] = None,
+    role: Optional[str] = "decode",
     logging_conf: Optional[dict] = None,
 ):
+    print(f"Starting worker at {address} with role {role}")
     loop = asyncio.get_event_loop()
     task = loop.create_task(
         _start_worker(
@@ -86,6 +92,7 @@ def main(
             supervisor_address,
             metrics_exporter_host,
             metrics_exporter_port,
+            role,
             logging_conf,
         )
     )

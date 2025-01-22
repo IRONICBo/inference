@@ -293,7 +293,7 @@ class WorkerActor(xo.StatelessActor):
             asyncio.run_coroutine_threadsafe(
                 self._periodical_report_status(), loop=self._isolation.loop
             )
-        logger.info(f"Xinference worker {self.address} started")
+        logger.info(f"Xinference worker {self.address} started with role {self._role}")
 
         # Windows does not have signal handler
         if os.name != "nt":
@@ -1051,7 +1051,7 @@ class WorkerActor(xo.StatelessActor):
             # asyncio.timeout is only available in Python >= 3.11
             async with timeout(2):
                 status = await asyncio.to_thread(gather_node_info)
-                status['labels'] = Labels(role="decode")
+                status['labels'] = Labels(role=self._role)
                 logger.info("Report status got status: %s", status)
         except asyncio.CancelledError:
             raise

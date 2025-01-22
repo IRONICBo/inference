@@ -94,7 +94,7 @@ class ReplicaInfo:
 
 
 class SupervisorActor(xo.StatelessActor):
-    def __init__(self):
+    def __init__(self, role: Optional[str]="normal"):
         super().__init__()
         self._worker_address_to_worker: Dict[str, xo.ActorRefType["WorkerActor"]] = {}  # type: ignore
         self._worker_status: Dict[str, WorkerStatus] = {}  # type: ignore
@@ -104,6 +104,7 @@ class SupervisorActor(xo.StatelessActor):
         self._model_uid_to_replica_info: Dict[str, ReplicaInfo] = {}  # type: ignore
         self._uptime = None
         self._lock = asyncio.Lock()
+        self._role = role
 
     @classmethod
     def default_uid(cls) -> str:
@@ -129,7 +130,7 @@ class SupervisorActor(xo.StatelessActor):
             asyncio.run_coroutine_threadsafe(
                 self._check_dead_nodes(), loop=self._isolation.loop
             )
-        logger.info(f"Xinference supervisor {self.address} started")
+        logger.info(f"Xinference supervisor {self.address} started with role: {self._role}.")
         from .cache_tracker import CacheTrackerActor
         from .progress_tracker import ProgressTrackerActor
         from .status_guard import StatusGuardActor
@@ -283,6 +284,8 @@ class SupervisorActor(xo.StatelessActor):
             "ip_address": self.address.split(":")[0],
             "gpu_count": 0,
             "gpu_vram_total": 0,
+            # Cluster only contains one role.
+            "role": self._role,
         }
         if detailed:
             supervisor_device_info["gpu_vram_total"] = 0

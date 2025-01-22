@@ -235,6 +235,17 @@ class NodeInfo extends React.Component {
           </StyledTableRow>
         )
         table_bodies.splice(1, 0, supervisor_addr_row)
+        const supervisor_role_row = (
+          <StyledTableRow>
+            <StyledTableCell>{this.t('clusterInfo.role')}</StyledTableCell>
+            <StyledTableCell>
+              <Grid container>
+                <Grid>{roleData[0] ? roleData[0]['role'] : '-'}</Grid>
+              </Grid>
+            </StyledTableCell>
+          </StyledTableRow>
+        )
+        table_bodies.splice(1, 0, supervisor_role_row)
       }
 
       return (

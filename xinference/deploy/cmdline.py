@@ -33,6 +33,8 @@ from ..constants import (
     XINFERENCE_DEFAULT_DISTRIBUTED_HOST,
     XINFERENCE_DEFAULT_ENDPOINT_PORT,
     XINFERENCE_DEFAULT_LOCAL_HOST,
+    XINFERENCE_DEFAULT_SUPERVISOR_ROLE,
+    XINFERENCE_DEFAULT_WORKER_ROLE,
     XINFERENCE_ENV_ENDPOINT,
     XINFERENCE_LOG_BACKUP_COUNT,
     XINFERENCE_LOG_MAX_BYTES,
@@ -268,12 +270,20 @@ def local(
     type=str,
     help="Specify the auth config json file.",
 )
+@click.option(
+    "--role",
+    "-R",
+    default=XINFERENCE_DEFAULT_SUPERVISOR_ROLE,
+    type=str,
+    help="Specify the distributed role of the supervisor, options are 'normal' and 'disaggregated' (Default is 'normal')",
+)
 def supervisor(
     log_level: str,
     host: str,
     port: int,
     supervisor_port: Optional[int],
     auth_config: Optional[str],
+    role: Optional[str],
 ):
     from ..deploy.supervisor import main
 
@@ -292,6 +302,7 @@ def supervisor(
         supervisor_port=supervisor_port,
         logging_conf=dict_config,
         auth_config_file=auth_config,
+        role=role,
     )
 
 
@@ -329,6 +340,13 @@ def supervisor(
     type=int,
     help="Specify the port number for the Xinference metrics exporter worker.",
 )
+@click.option(
+    "--role",
+    "-R",
+    default=XINFERENCE_DEFAULT_WORKER_ROLE,
+    type=str,
+    help="Specify the role for the Xinference worker.",
+)
 def worker(
     log_level: str,
     endpoint: Optional[str],
@@ -336,6 +354,7 @@ def worker(
     worker_port: Optional[int],
     metrics_exporter_host: Optional[str],
     metrics_exporter_port: Optional[int],
+    role: Optional[str],
 ):
     from ..deploy.worker import main
 
@@ -359,6 +378,7 @@ def worker(
         supervisor_address=supervisor_internal_addr,
         metrics_exporter_host=metrics_exporter_host,
         metrics_exporter_port=metrics_exporter_port,
+        role=role,
         logging_conf=dict_config,
     )
 

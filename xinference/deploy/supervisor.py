@@ -32,7 +32,7 @@ from .utils import health_check
 logger = logging.getLogger(__name__)
 
 
-async def _start_supervisor(address: str, logging_conf: Optional[Dict] = None):
+async def _start_supervisor(address: str, role: Optional[str] = "normal", logging_conf: Optional[Dict] = None):
     logging.config.dictConfig(logging_conf)  # type: ignore
 
     pool = None
@@ -41,7 +41,7 @@ async def _start_supervisor(address: str, logging_conf: Optional[Dict] = None):
             address=address, n_process=0, logging_conf={"dict": logging_conf}
         )
         await xo.create_actor(
-            SupervisorActor, address=address, uid=SupervisorActor.default_uid()
+            SupervisorActor, address=address, role=role, uid=SupervisorActor.default_uid()
         )
         await pool.join()
     except asyncio.exceptions.CancelledError:
@@ -49,7 +49,7 @@ async def _start_supervisor(address: str, logging_conf: Optional[Dict] = None):
             await pool.stop()
 
 
-def run(address: str, logging_conf: Optional[Dict] = None):
+def run(address: str, role: Optional[str] = "normal", logging_conf: Optional[Dict] = None):
     def sigterm_handler(signum, frame):
         sys.exit(0)
 
@@ -57,15 +57,15 @@ def run(address: str, logging_conf: Optional[Dict] = None):
 
     loop = asyncio.get_event_loop()
     task = loop.create_task(
-        _start_supervisor(address=address, logging_conf=logging_conf)
+        _start_supervisor(address=address, role=role, logging_conf=logging_conf)
     )
     loop.run_until_complete(task)
 
 
 def run_in_subprocess(
-    address: str, logging_conf: Optional[Dict] = None
+    address: str, role: Optional[str] = "normal", logging_conf: Optional[Dict] = None
 ) -> multiprocessing.Process:
-    p = multiprocessing.Process(target=run, args=(address, logging_conf))
+    p = multiprocessing.Process(target=run, args=(address, role, logging_conf))
     p.start()
     return p
 
@@ -76,9 +76,10 @@ def main(
     supervisor_port: Optional[int],
     logging_conf: Optional[Dict] = None,
     auth_config_file: Optional[str] = None,
+    role: Optional[str] = "normal",
 ):
     supervisor_address = f"{host}:{supervisor_port or get_next_port()}"
-    local_cluster = run_in_subprocess(supervisor_address, logging_conf)
+    local_cluster = run_in_subprocess(supervisor_address, role, logging_conf)
 
     if not health_check(
         address=supervisor_address,

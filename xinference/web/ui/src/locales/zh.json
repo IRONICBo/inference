@@ -171,6 +171,7 @@
     "gpuInfo": "GPU 信息",
     "gpuMemoryInfo": "GPU 内存信息",
     "address": "地址",
+    "role": "角色",
     "item": "项",
     "value": "值",
     "nodeType": "节点类型",

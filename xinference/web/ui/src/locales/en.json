@@ -171,6 +171,7 @@
     "gpuInfo": "GPU Info",
     "gpuMemoryInfo": "GPU Memory Info",
     "address": "Address",
+    "role": "Role",
     "item": "Item",
     "value": "Value",
     "nodeType": "Node Type",
