@@ -44,7 +44,7 @@ from ..types import PeftModelConfig
 from .cache_tracker import CacheTrackerActor
 from .event import Event, EventCollectorActor, EventType
 from .metrics import launch_metrics_export_server, record_metrics
-from .resource import gather_node_info
+from .resource import Labels, gather_node_info
 from .status_guard import StatusGuardActor
 from .utils import log_async, log_sync, parse_replica_model_uid, purge_dir
 
@@ -72,6 +72,7 @@ class WorkerActor(xo.StatelessActor):
         gpu_devices: List[int],
         metrics_exporter_host: Optional[str] = None,
         metrics_exporter_port: Optional[int] = None,
+        role: Optional[str] = "decode",
     ):
         super().__init__()
         # static attrs.
@@ -89,6 +90,7 @@ class WorkerActor(xo.StatelessActor):
         self._cache_tracker_ref: xo.ActorRefType[
             CacheTrackerActor
         ] = None  # type: ignore
+        self._role = role
 
         # internal states.
         # temporary placeholder during model launch process:
@@ -1049,6 +1051,8 @@ class WorkerActor(xo.StatelessActor):
             # asyncio.timeout is only available in Python >= 3.11
             async with timeout(2):
                 status = await asyncio.to_thread(gather_node_info)
+                status['labels'] = Labels(role="decode")
+                logger.info("Report status got status: %s", status)
         except asyncio.CancelledError:
             raise
         except Exception:

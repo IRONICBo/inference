@@ -45,7 +45,7 @@ from ..core.model import ModelActor
 from ..core.status_guard import InstanceInfo, LaunchStatus
 from ..types import PeftModelConfig
 from .metrics import record_metrics
-from .resource import GPUStatus, ResourceStatus
+from .resource import GPUStatus, ResourceStatus, Labels
 from .utils import (
     assign_replica_gpu,
     build_replica_model_uid,
@@ -84,7 +84,7 @@ def callback_for_async_launch(model_uid: str):
 class WorkerStatus:
     update_time: float
     failure_remaining_count: int
-    status: Dict[str, Union[ResourceStatus, GPUStatus]]
+    status: Dict[str, Union[ResourceStatus, GPUStatus, Labels]]
 
 
 @dataclass
@@ -298,7 +298,7 @@ class SupervisorActor(xo.StatelessActor):
         res = [{"node_type": "Supervisor", **supervisor_device_info}]
         for worker_addr, worker_status in self._worker_status.items():
             vram_total: float = sum(
-                [v.mem_total for k, v in worker_status.status.items() if k != "cpu"]  # type: ignore
+                [v.mem_total for k, v in worker_status.status.items() if k != "cpu" and k != "labels"]  # type: ignore
             )
             total = (
                 vram_total if vram_total == 0 else f"{int(vram_total / 1024 / 1024)}MiB"
@@ -306,7 +306,7 @@ class SupervisorActor(xo.StatelessActor):
             info = {
                 "node_type": "Worker",
                 "ip_address": worker_addr.split(":")[0],
-                "gpu_count": len(worker_status.status) - 1,
+                "gpu_count": len(worker_status.status) - 2,
                 "gpu_vram_total": total,
             }
             if detailed:
@@ -317,8 +317,9 @@ class SupervisorActor(xo.StatelessActor):
                 info["mem_available"] = cpu_info.memory_available
                 info["mem_total"] = cpu_info.memory_total
                 info["gpu_vram_total"] = vram_total
+                info["role"] = worker_status.status["labels"].role
                 info["gpu_vram_available"] = sum(
-                    [v.mem_free for k, v in worker_status.status.items() if k != "cpu"]
+                    [v.mem_free for k, v in worker_status.status.items() if k != "cpu" and k != "labels"]
                 )
             res.append(info)
         return res
@@ -1277,6 +1278,7 @@ class SupervisorActor(xo.StatelessActor):
 
     @log_async(logger=logger)
     async def get_model(self, model_uid: str) -> xo.ActorRefType["ModelActor"]:
+        # Get model from decode worker
         replica_info = self._model_uid_to_replica_info.get(model_uid, None)
         if replica_info is None:
             raise ValueError(f"Model not found in the model list, uid: {model_uid}")
@@ -1432,10 +1434,10 @@ class SupervisorActor(xo.StatelessActor):
             )
 
     async def report_worker_status(
-        self, worker_address: str, status: Dict[str, Union[ResourceStatus, GPUStatus]]
+        self, worker_address: str, status: Dict[str, Union[ResourceStatus, GPUStatus, Labels]],
     ):
         if worker_address not in self._worker_status:
-            logger.debug("Worker %s resources: %s", worker_address, status)
+            logger.info("Worker %s resources: %s", worker_address, status)
             self._worker_status[worker_address] = WorkerStatus(
                 update_time=time.time(),
                 failure_remaining_count=XINFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD,

@@ -28,6 +28,9 @@ class ResourceStatus:
     memory_available: float
     memory_total: float
 
+@dataclass
+class Labels:
+    role: str
 
 @dataclass
 class GPUStatus:
@@ -36,7 +39,7 @@ class GPUStatus:
     mem_used: float
 
 
-def gather_node_info() -> Dict[str, Union[ResourceStatus, GPUStatus]]:
+def gather_node_info() -> Dict[str, Union[ResourceStatus, GPUStatus, Labels]]:
     node_resource = dict()
     mem_info = psutil.virtual_memory()
     node_resource["cpu"] = ResourceStatus(

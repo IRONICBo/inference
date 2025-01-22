@@ -233,7 +233,8 @@ def local(
     )
 
 
-@click.command(
+@cli.command(
+    "supervisor",
     help="Starts an Xinference supervisor to control and monitor the worker actors."
 )
 @click.option(
@@ -294,9 +295,8 @@ def supervisor(
     )
 
 
-@click.command(
-    help="Starts an Xinference worker to execute tasks assigned by the supervisor in a distributed setup."
-)
+# @cli.command("register", help="Register a new model with Xinference for deployment.")
+@cli.command("worker", help="Starts an Xinference worker to execute tasks assigned by the supervisor in a distributed setup.")
 @click.option(
     "--log-level",
     default="INFO",

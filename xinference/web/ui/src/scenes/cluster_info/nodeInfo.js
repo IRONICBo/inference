@@ -290,6 +290,9 @@ class NodeInfo extends React.Component {
               <StyledTableCell style={{ fontWeight: 'bolder' }}>
                 {this.t('clusterInfo.gpuMemTotal')}
               </StyledTableCell>
+              <StyledTableCell style={{ fontWeight: 'bolder' }}>
+                {this.t('clusterInfo.role')}
+              </StyledTableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -317,6 +320,9 @@ class NodeInfo extends React.Component {
                 </StyledTableCell>
                 <StyledTableCell>
                   {toReadableSize(row['gpu_vram_total'])}
+                </StyledTableCell>
+                <StyledTableCell>
+                  {row['role']}
                 </StyledTableCell>
               </StyledTableRow>
             ))}
