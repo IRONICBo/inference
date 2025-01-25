@@ -20,7 +20,8 @@ import xoscar as xo
 class VLLMBlockTracker(xo.StatelessActor):
     @classmethod
     def default_uid(cls):
-        return f"vllm-block-tracker-actor"
+        import uuid
+        return f"vllm-block-tracker-actor-{uuid.uuid4()}"
 
     def __init__(self):
         super().__init__()

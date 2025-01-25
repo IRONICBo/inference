@@ -40,6 +40,7 @@ async def start_worker_components(
         gpu_device_indices.extend([int(i) for i in cuda_visible_devices.split(",")])
     else:
         gpu_device_indices = list(range(gpu_count()))
+    logger.info(f"start with gpu_device_indices:{gpu_device_indices}")
 
     await xo.create_actor(
         WorkerActor,

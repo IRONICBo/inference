@@ -230,6 +230,9 @@ class VLLMModel(LLM):
     def set_xavier_config(self, value: Optional[Dict]):
         self._xavier_config = value  # type: ignore
 
+    def set_role(self, value: str):
+        self._role = value
+
     def load(self):
         try:
             import vllm
@@ -605,6 +608,12 @@ class VLLMModel(LLM):
 
         if not request_id:
             request_id = str(uuid.uuid1())
+
+        if self._role == "prefill":
+            # only for one token generation
+            sampling_params.n = 1
+            # disable stream for prefill
+            stream = False
 
         assert self._engine is not None
         results_generator = self._engine.generate(

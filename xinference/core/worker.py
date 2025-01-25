@@ -381,6 +381,9 @@ class WorkerActor(xo.StatelessActor):
 
         return gpu_count()
 
+    def get_role(self) -> str:
+        return self._role
+
     @log_sync(logger=logger)
     def get_model_count(self) -> int:
         return len(self._model_uid_to_model)
@@ -906,6 +909,7 @@ class WorkerActor(xo.StatelessActor):
                     model_description=model_description,
                     request_limits=request_limits,
                     xavier_config=xavier_config,
+                    role=self._role,
                 )
                 await model_ref.load()
             except:
@@ -1031,6 +1035,7 @@ class WorkerActor(xo.StatelessActor):
     @log_sync(logger=logger)
     def get_model(self, model_uid: str) -> xo.ActorRefType["ModelActor"]:
         model_status = self._model_uid_to_model_status.get(model_uid)
+        logger.debug(f"_model_uid_to_model_status: {self._model_uid_to_model_status}")
         if model_status and model_status.last_error:
             raise Exception(model_status.last_error)
         model_ref = self._model_uid_to_model.get(model_uid, None)

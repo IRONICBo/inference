@@ -226,6 +226,7 @@ class ModelActor(xo.StatelessActor, CancelMixin):
         model_description: Optional["ModelDescription"] = None,
         request_limits: Optional[int] = None,
         xavier_config: Optional[Dict] = None,
+        role: Optional[str] = None,
     ):
         super().__init__()
         from ..model.llm.lmdeploy.core import LMDeployModel
@@ -269,7 +270,9 @@ class ModelActor(xo.StatelessActor, CancelMixin):
 
         if isinstance(self._model, VLLMModel):
             self._xavier_config = xavier_config
+            self._role = role
             self._model.set_xavier_config(xavier_config)
+            self._model.set_role(role)
             self._transfer_ref = None
 
     async def __post_create__(self):
@@ -1206,3 +1209,37 @@ class ModelActor(xo.StatelessActor, CancelMixin):
 
     async def get_pending_requests_count(self):
         return self._pending_requests.qsize()
+
+
+class PDModelActor(xo.StatelessActor, CancelMixin):
+    @classmethod
+    def default_uid(cls):
+        return f"pd-model-actor"
+
+    def __init__(
+        self,
+        prefill_model: xo.ActorRefType["ModelActor"],
+        decode_model: xo.ActorRefType["ModelActor"],
+    ):
+        self._prefill_model = prefill_model
+        self._decode_model = decode_model
+        logger.info(f"Initialize PDModelActor with prefill model: {prefill_model} and decode model: {decode_model}")
+
+    async def __post_create__(self):
+        pass
+    async def __pre_destroy__(self):
+        pass
+
+    def __repr__(self) -> str:
+        return f"PDModelActor(Prefill Model: {self._prefill_model} Decode Model: {self._decode_model})"
+
+    def decrease_serve_count(self):
+        self._decode_model.decrease_serve_count()
+        self._prefill_model.decrease_serve_count()
+
+    @xo.generator
+    @log_async(logger=logger)
+    async def generate(self, prompt: str, *args, **kwargs):
+        await self._prefill_model.generate(prompt, *args, **kwargs)
+
+        return await self._decode_model.generate(prompt, *args, **kwargs)

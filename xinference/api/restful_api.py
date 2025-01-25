@@ -1255,7 +1255,11 @@ class RESTfulAPI(CancelMixin):
         model_uid = body.model
 
         try:
-            model = await (await self._get_supervisor_ref()).get_model(model_uid)
+            supervisor_ref = await self._get_supervisor_ref()
+            # if supervisor_ref._role == "disaggregated":
+            model = await supervisor_ref.get_disagg_model(model_uid)
+            # else:
+                # model = await supervisor_ref.get_model(model_uid)
         except ValueError as ve:
             logger.error(str(ve), exc_info=True)
             await self._report_error_event(model_uid, str(ve))

@@ -41,7 +41,7 @@ from ..constants import (
     XINFERENCE_HEALTH_CHECK_INTERVAL,
     XINFERENCE_HEALTH_CHECK_TIMEOUT,
 )
-from ..core.model import ModelActor
+from ..core.model import ModelActor, PDModelActor
 from ..core.status_guard import InstanceInfo, LaunchStatus
 from ..types import PeftModelConfig
 from .metrics import record_metrics
@@ -363,22 +363,29 @@ class SupervisorActor(xo.StatelessActor):
         worker_ref = await self._choose_worker()
         return await worker_ref.get_devices_count()
 
-    async def _choose_worker(self) -> xo.ActorRefType["WorkerActor"]:
+    async def _choose_worker(self, role: Optional[str] = None) -> xo.ActorRefType["WorkerActor"]:
         # TODO: better allocation strategy.
         min_running_model_count = None
         target_worker = None
 
         workers = list(self._worker_address_to_worker.values())
+        logger.debug(f"Choose worker: {workers}, status: {self._worker_status}")
         for worker in workers:
-            running_model_count = await worker.get_model_count()
-            if (
-                min_running_model_count is None
-                or running_model_count < min_running_model_count
-            ):
-                min_running_model_count = running_model_count
-                target_worker = worker
+            if role is not None:
+                worker_status = self._worker_status.get(worker.address)
+                if worker_status.status['labels'].role == role:
+                    target_worker = worker
+            else:
+                running_model_count = await worker.get_model_count()
+                if (
+                    min_running_model_count is None
+                    or running_model_count < min_running_model_count
+                ):
+                    min_running_model_count = running_model_count
+                    target_worker = worker
 
         if target_worker:
+            logger.debug(f"Found available worker {target_worker.address} role {role}")
             return target_worker
 
         raise RuntimeError("No available worker found")
@@ -928,6 +935,9 @@ class SupervisorActor(xo.StatelessActor):
         # search in worker first
         if not self.is_local_deployment():
             workers = list(self._worker_address_to_worker.values())
+            logger.debug(
+                f"Searching model {model_name} in worker {worker_ip} if exists."
+            )
             for worker in workers:
                 res = await worker.get_model_registration(model_type, model_name)
                 if res is not None:
@@ -971,6 +981,8 @@ class SupervisorActor(xo.StatelessActor):
         if model_uid is None:
             model_uid = self._gen_model_uid(model_name)
 
+        enable_disagg: bool = self._role == "disaggregated"
+
         # Xavier-related
         enable_xavier: bool = (
             bool(kwargs.pop("enable_xavier", False))
@@ -981,7 +993,7 @@ class SupervisorActor(xo.StatelessActor):
         store_port = None
         world_size = None
         if enable_xavier:
-            if replica <= 1:
+            if replica <= 1 and self._role != "disaggregated":
                 logger.warning(f"Enabling xavier when `replica<=1` is meaningless.")
                 enable_xavier = False
             else:
@@ -1007,7 +1019,7 @@ class SupervisorActor(xo.StatelessActor):
         logger.debug(
             f"Enter launch_builtin_model, model_uid: {model_uid}, model_name: {model_name}, model_size: {model_size}, "
             f"model_format: {model_format}, quantization: {quantization}, replica: {replica}, enable_xavier: {enable_xavier}, "
-            f"kwargs: {kwargs}"
+            f"enable_disagg: {enable_disagg} kwargs: {kwargs}"
         )
 
         async def _launch_one_model(worker_ref, _replica_model_uid, rank: int):
@@ -1065,6 +1077,9 @@ class SupervisorActor(xo.StatelessActor):
                 **kwargs,
             )
             self._replica_model_uid_to_worker[_replica_model_uid] = worker_ref
+            logger.info(
+                f"Launch builtin model {self._replica_model_uid_to_worker}."
+            )
             return subpool_address
 
         async def _launch_model():
@@ -1094,6 +1109,57 @@ class SupervisorActor(xo.StatelessActor):
                     )
                     worker_refs.append((worker_ref, rep_model_uid))
                     rank_addresses.append(subpool_address)
+
+                if enable_disagg:
+                    # Start prefill models
+                    for rank, rep_model_uid in enumerate(
+                        iter_replica_model_uid(model_uid, replica, start=0)
+                    ):
+                        worker_ref = (
+                            target_ip_worker_ref
+                            if target_ip_worker_ref is not None
+                            else await self._choose_worker(role="prefill")
+                        )
+                        subpool_address = await _launch_one_model(
+                            worker_ref, rep_model_uid, rank, store_port
+                        )
+                        worker_refs.append((worker_ref, rep_model_uid))
+                        rank_addresses.append(subpool_address)
+                        logger.debug(
+                            f"Starting prefill model {rep_model_uid} on worker {worker_ref.address}"
+                        )
+
+                    # Start decode models
+                    for rank, rep_model_uid in enumerate(
+                        iter_replica_model_uid(model_uid, replica*2, start=replica)
+                    ):
+                        worker_ref = (
+                            target_ip_worker_ref
+                            if target_ip_worker_ref is not None
+                            else await self._choose_worker(role="decode")
+                        )
+                        subpool_address = await _launch_one_model(
+                            worker_ref, rep_model_uid, rank, store_port
+                        )
+                        worker_refs.append((worker_ref, rep_model_uid))
+                        rank_addresses.append(subpool_address)
+                        logger.debug(
+                            f"Starting decode model {rep_model_uid} on worker {worker_ref.address}"
+                        )
+                else:
+                    for rank, rep_model_uid in enumerate(
+                        iter_replica_model_uid(model_uid, replica)
+                    ):
+                        worker_ref = (
+                            target_ip_worker_ref
+                            if target_ip_worker_ref is not None
+                            else await self._choose_worker()
+                        )
+                        subpool_address = await _launch_one_model(
+                            worker_ref, rep_model_uid, rank, store_port
+                        )
+                        worker_refs.append((worker_ref, rep_model_uid))
+                        rank_addresses.append(subpool_address)
 
                 # For xavier, start all the vllm instances first,
                 # and then start the transfer component,
@@ -1298,6 +1364,69 @@ class SupervisorActor(xo.StatelessActor):
         return await worker_ref.get_model(model_uid=replica_model_uid)
 
     @log_async(logger=logger)
+    async def get_disagg_model(self, model_uid: str) -> xo.ActorRefType["PDModelActor"]:
+        # Make sure the model name is raw
+        model_uid = parse_replica_model_uid(model_uid)[0]
+        # Get model from decode worker
+        replica_info = self._model_uid_to_replica_info.get(model_uid, None)
+        if replica_info is None:
+            raise ValueError(f"Model not found in the model list, uid: {model_uid}")
+
+        # get prefill and decode worker
+        # TODO: add prefill and decode models into mapping
+        prefill_model_ref = None
+        for idx in range(replica_info.replica*2):
+            replica_model_uid = build_replica_model_uid(
+                model_uid, idx
+            )
+            logger.debug(f"Get model from worker with _replica_model_uid_to_worker: {self._replica_model_uid_to_worker}")
+
+            worker_ref = self._replica_model_uid_to_worker.get(replica_model_uid, None)
+            if worker_ref is None:
+                continue
+
+            worker_status = self._worker_status.get(worker_ref.address)
+            if worker_status.status['labels'].role == "prefill":
+                prefill_model_ref = await worker_ref.get_model(model_uid=replica_model_uid)
+                break
+
+        if prefill_model_ref is None:
+            raise ValueError(
+                f"Prefill model not found in the model list, uid: {model_uid}"
+            )
+
+        decode_model_ref = None
+        for idx in range(replica_info.replica*2):
+            replica_model_uid = build_replica_model_uid(
+                model_uid, idx
+            )
+            logger.debug(f"Get model from worker with _replica_model_uid_to_worker: {self._replica_model_uid_to_worker}")
+
+            worker_ref = self._replica_model_uid_to_worker.get(replica_model_uid, None)
+            if worker_ref is None:
+                continue
+
+            worker_status = self._worker_status.get(worker_ref.address)
+            if worker_status.status['labels'].role == "decode":
+                decode_model_ref = await worker_ref.get_model(model_uid=replica_model_uid)
+                break
+
+        if decode_model_ref is None:
+            raise ValueError(
+                f"Decode model not found in the model list, uid: {model_uid}"
+            )
+
+        pd_model_ref = await xo.create_actor(
+            PDModelActor,
+            uid=gen_random_string(8),
+            address=self.address,
+            prefill_model=prefill_model_ref,
+            decode_model=decode_model_ref,
+        )
+
+        return pd_model_ref
+
+    @log_async(logger=logger)
     async def get_model_status(self, replica_model_uid: str):
         worker_ref = self._replica_model_uid_to_worker.get(replica_model_uid, None)
         if worker_ref is None:
@@ -1331,6 +1460,7 @@ class SupervisorActor(xo.StatelessActor):
         for worker in workers:
             ret.update(await worker.list_models())
         running_model_info = {parse_replica_model_uid(k)[0]: v for k, v in ret.items()}
+        logger.info(f"running_model_info: {running_model_info}")
         # add replica count
         for k, v in running_model_info.items():
             v["replica"] = self._model_uid_to_replica_info[k].replica

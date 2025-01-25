@@ -156,12 +156,12 @@ def log_sync(logger, level=logging.DEBUG, log_exception=True):
     return decorator
 
 
-def iter_replica_model_uid(model_uid: str, replica: int) -> Generator[str, None, None]:
+def iter_replica_model_uid(model_uid: str, replica: int, start: Optional[int] = 0) -> Generator[str, None, None]:
     """
     Generates all the replica model uids.
     """
     replica = int(replica)
-    for rep_id in range(replica):
+    for rep_id in range(start, replica):
         yield f"{model_uid}-{rep_id}"
 
 
