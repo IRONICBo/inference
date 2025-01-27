@@ -137,6 +137,7 @@ class XavierScheduler(Scheduler):
                 ):
                     details.add(detail)
 
+        logger.debug(f"Xaiver scheduler details: {details}")
         if details:
             tracker_ref = await self._get_block_tracker_ref()
             remote = await tracker_ref.query_blocks(virtual_engine, list(details))
@@ -265,7 +266,9 @@ class XavierScheduler(Scheduler):
             In the decode stage, it only applies to the last token of the block, which can negatively impact throughput.
             """
             is_prefill: bool = token_chunk_size != 1
-            if is_prefill:
+            # must query remote in decode
+            if is_prefill or True:
+            # if is_prefill or True:
                 local, remote = await self._get_transfer_details(
                     virtual_engine, block_tables, seq_group
                 )

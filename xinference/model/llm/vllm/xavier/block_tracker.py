@@ -12,16 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import random
+from logging import getLogger
 from typing import Dict, List, Optional, Set, Tuple
 
 import xoscar as xo
+
+logger = getLogger(__name__)
 
 
 class VLLMBlockTracker(xo.StatelessActor):
     @classmethod
     def default_uid(cls):
-        import uuid
-        return f"vllm-block-tracker-actor-{uuid.uuid4()}"
+        return f"vllm-block-tracker-actor"
 
     def __init__(self):
         super().__init__()
@@ -34,6 +36,9 @@ class VLLMBlockTracker(xo.StatelessActor):
     def register_blocks(
         self, virtual_engine: int, block_infos: List[Tuple[int, int]], rank: int
     ):
+        logger.debug(
+            f"Register blocks: virtual_engine={virtual_engine}, block_infos={block_infos}, rank={rank}"
+        )
         # Update query meta
         if virtual_engine not in self._hash_to_rank_and_block_id:
             self._hash_to_rank_and_block_id[virtual_engine] = {}
@@ -57,6 +62,9 @@ class VLLMBlockTracker(xo.StatelessActor):
     def query_blocks(
         self, virtual_engine: int, hash_contents: List[Tuple[int, int]]
     ) -> Dict[int, Set[Tuple[int, int, int]]]:
+        logger.debug(
+            f"Query blocks params: virtual_engine={virtual_engine}, hash_contents={hash_contents}"
+        )
         if virtual_engine not in self._hash_to_rank_and_block_id:
             return {}
         hash_to_rank_and_block_id = self._hash_to_rank_and_block_id[virtual_engine]
@@ -81,6 +89,8 @@ class VLLMBlockTracker(xo.StatelessActor):
                         }
                     else:
                         remote[rank].add((hash_content, block_id, _id))
+
+        logger.debug(f"Query blocks result: {remote}")
         return remote
 
     def unregister_block(self, virtual_engine: int, rank: int, block_id: int):

@@ -1979,6 +1979,7 @@ class RESTfulAPI(CancelMixin):
 
         has_tool_message = messages[-1].get("role") == "tool"
         model_uid = body.model
+        logger.debug(f"use model_uid: {model_uid}")
 
         try:
             model = await (await self._get_supervisor_ref()).get_model(model_uid)

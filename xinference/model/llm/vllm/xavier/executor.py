@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import TYPE_CHECKING, List, Optional, Set, Tuple, Union
+from logging import getLogger
 
 import xoscar as xo
 from vllm.executor.gpu_executor import GPUExecutorAsync
@@ -23,6 +24,8 @@ from vllm.worker.cache_engine import CacheEngine
 if TYPE_CHECKING:
     from .scheduler import XavierScheduler
 
+
+logger = getLogger(__name__)
 
 class XavierExecutor(GPUExecutorAsync):
     scheduler: Optional[List["XavierScheduler"]] = None
@@ -97,6 +100,7 @@ class XavierExecutor(GPUExecutorAsync):
         This information will be used by the tracker after execution to register the locally computed blocks.
         """
         virtual_engine = execute_model_req.virtual_engine
+        # logger.debug(f"Execute model async, virtual_engine: {virtual_engine}")
         block_tracker_ref = await self._get_block_tracker_ref()
         scheduler = self.scheduler[virtual_engine]  # type: ignore
         rank = self.get_rank()
@@ -116,6 +120,7 @@ class XavierExecutor(GPUExecutorAsync):
 
         res = await super().execute_model_async(execute_model_req)
 
+        # logger.debug(f"Execute model async, virtual_engine: {virtual_engine} executed_blocks_details: {executed_blocks_details}")
         if executed_blocks_details:
             """
             Why not collect and register the information after execution?

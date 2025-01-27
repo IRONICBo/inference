@@ -1057,7 +1057,7 @@ class WorkerActor(xo.StatelessActor):
             async with timeout(2):
                 status = await asyncio.to_thread(gather_node_info)
                 status['labels'] = Labels(role=self._role)
-                logger.info("Report status got status: %s", status)
+                # logger.debug("Report status got status: %s", status)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1219,6 +1219,7 @@ class WorkerActor(xo.StatelessActor):
                     uid=rep_model_uid,
                     xavier_config=xavier_config,
                 )
+                logger.debug(f"Rank0ModelActor created at {subpool_address}")
             except:
                 await self._main_pool.remove_sub_pool(subpool_address)
                 raise

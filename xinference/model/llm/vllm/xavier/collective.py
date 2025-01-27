@@ -28,7 +28,7 @@ class CollectiveRank:
         world_addresses: List[str],
     ):
         self._rank = rank
-        self._world_size = world_size
+        self._world_size = 3
         self._rank_address = rank_address
         self._world_addresses = world_addresses
         self._store_address = store_address

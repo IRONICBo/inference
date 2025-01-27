@@ -1005,7 +1005,14 @@ class SupervisorActor(xo.StatelessActor):
                     address=self.address,
                     uid=f"{VLLMBlockTracker.default_uid()}-{model_uid}",
                 )
-                world_size = replica + 1
+
+                #  TODO: this will be removed and replaced by a more general solution,
+                # current default is 3 for 2 worker with 1p1d.
+                if self._role != "disaggregated":
+                    # for 1 p and 1 d, in each one replica
+                    world_size = replica * 2 + 1
+                else:
+                    world_size = replica + 1
                 logger.info(f"Going to start xavier with world size: {world_size}")
                 self._collective_manager_mapping[model_uid] = await xo.create_actor(
                     CollectiveManager,
@@ -1086,68 +1093,62 @@ class SupervisorActor(xo.StatelessActor):
             try:
                 worker_refs = []
                 rank_addresses = []
-                for _idx, rep_model_uid in enumerate(
-                    iter_replica_model_uid(model_uid, replica)
-                ):
-                    worker_ref = (
-                        target_ip_worker_ref
-                        if target_ip_worker_ref is not None
-                        else await self._choose_worker()
-                    )
-                    if enable_xavier and _idx == 0:
-                        """
-                        Start the rank 0 model actor on the worker that holds the rank 1 replica,
-                        solely for constructing the collective communication world.
-                        """
-                        _uid = model_uid + "-rank0"
-                        rank0_address = await _launch_one_model(worker_ref, _uid, 0)
-                        worker_refs.append((worker_ref, _uid))
-                        rank_addresses.append(rank0_address)
-
-                    subpool_address = await _launch_one_model(
-                        worker_ref, rep_model_uid, _idx + 1
-                    )
-                    worker_refs.append((worker_ref, rep_model_uid))
-                    rank_addresses.append(subpool_address)
-
                 if enable_disagg:
-                    # Start prefill models
+                    logger.info(f"Starting disagg models for {model_uid}.")
+                    # Start prefill models, with extra replica for collective communication.
                     for rank, rep_model_uid in enumerate(
-                        iter_replica_model_uid(model_uid, replica, start=0)
+                        iter_replica_model_uid(model_uid, replica+1, start=0),
+                        start=0
                     ):
                         worker_ref = (
                             target_ip_worker_ref
                             if target_ip_worker_ref is not None
                             else await self._choose_worker(role="prefill")
                         )
+                        """
+                        Start the rank 0 model actor on the supervisor that holds the rank 1 replica,
+                        solely for constructing the collective communication world.
+                        """
+                        if rank == 0:
+                            _uid = model_uid + "-rank0"
+                            rank0_address = await _launch_one_model(worker_ref, _uid, rank)
+                            worker_refs.append((worker_ref, _uid))
+                            rank_addresses.append(rank0_address)
+                            logger.debug(
+                                f"Starting rank 0 model {_uid} on worker {worker_ref.address} with rank {rank}."
+                            )
+                            continue
+
                         subpool_address = await _launch_one_model(
-                            worker_ref, rep_model_uid, rank, store_port
+                            worker_ref, rep_model_uid, rank
                         )
                         worker_refs.append((worker_ref, rep_model_uid))
                         rank_addresses.append(subpool_address)
                         logger.debug(
-                            f"Starting prefill model {rep_model_uid} on worker {worker_ref.address}"
+                            f"Starting prefill model {rep_model_uid} on worker {worker_ref.address} with rank {rank}."
                         )
 
                     # Start decode models
                     for rank, rep_model_uid in enumerate(
-                        iter_replica_model_uid(model_uid, replica*2, start=replica)
+                        iter_replica_model_uid(model_uid, replica*2+1, start=replica+1),
+                        start=replica+1
                     ):
+                        rank = replica+1
                         worker_ref = (
                             target_ip_worker_ref
                             if target_ip_worker_ref is not None
                             else await self._choose_worker(role="decode")
                         )
                         subpool_address = await _launch_one_model(
-                            worker_ref, rep_model_uid, rank, store_port
+                            worker_ref, rep_model_uid, rank
                         )
                         worker_refs.append((worker_ref, rep_model_uid))
                         rank_addresses.append(subpool_address)
                         logger.debug(
-                            f"Starting decode model {rep_model_uid} on worker {worker_ref.address}"
+                            f"Starting decode model {rep_model_uid} on worker {worker_ref.address} with rank {rank}."
                         )
                 else:
-                    for rank, rep_model_uid in enumerate(
+                    for _idx, rep_model_uid in enumerate(
                         iter_replica_model_uid(model_uid, replica)
                     ):
                         worker_ref = (
@@ -1155,11 +1156,22 @@ class SupervisorActor(xo.StatelessActor):
                             if target_ip_worker_ref is not None
                             else await self._choose_worker()
                         )
+                        if enable_xavier and _idx == 0:
+                            """
+                            Start the rank 0 model actor on the worker that holds the rank 1 replica,
+                            solely for constructing the collective communication world.
+                            """
+                            _uid = model_uid + "-rank0"
+                            rank0_address = await _launch_one_model(worker_ref, _uid, 0)
+                            worker_refs.append((worker_ref, _uid))
+                            rank_addresses.append(rank0_address)
+
                         subpool_address = await _launch_one_model(
-                            worker_ref, rep_model_uid, rank, store_port
+                            worker_ref, rep_model_uid, _idx + 1
                         )
                         worker_refs.append((worker_ref, rep_model_uid))
                         rank_addresses.append(subpool_address)
+
 
                 # For xavier, start all the vllm instances first,
                 # and then start the transfer component,
@@ -1377,7 +1389,7 @@ class SupervisorActor(xo.StatelessActor):
         prefill_model_ref = None
         for idx in range(replica_info.replica*2):
             replica_model_uid = build_replica_model_uid(
-                model_uid, idx
+                model_uid, idx+1
             )
             logger.debug(f"Get model from worker with _replica_model_uid_to_worker: {self._replica_model_uid_to_worker}")
 
@@ -1398,7 +1410,7 @@ class SupervisorActor(xo.StatelessActor):
         decode_model_ref = None
         for idx in range(replica_info.replica*2):
             replica_model_uid = build_replica_model_uid(
-                model_uid, idx
+                model_uid, idx+1
             )
             logger.debug(f"Get model from worker with _replica_model_uid_to_worker: {self._replica_model_uid_to_worker}")
 
@@ -1437,12 +1449,22 @@ class SupervisorActor(xo.StatelessActor):
 
     @log_async(logger=logger)
     async def describe_model(self, model_uid: str) -> Dict[str, Any]:
+        logger.info(f"Describe model, model_uid: {model_uid} _model_uid_to_replica_info: {self._model_uid_to_replica_info} _replica_model_uid_to_worker: {self._replica_model_uid_to_worker}")
         replica_info = self._model_uid_to_replica_info.get(model_uid, None)
+
         if replica_info is None:
             raise ValueError(f"Model not found in the model list, uid: {model_uid}")
         # Use rep id 0 to instead of next(replica_info.scheduler) to avoid
         # consuming the generator.
-        replica_model_uid = build_replica_model_uid(model_uid, 0)
+        replica_id = 1
+        if self._role == "disaggregated":
+            replica_id = 1
+        else:
+            # replica = 0
+            # set default is 1
+            replica_id = 1
+        replica_model_uid = build_replica_model_uid(model_uid, replica_id)
+        logger.debug(f"Describe model, model_uid: {model_uid} replica_model_uid: {replica_model_uid}")
         worker_ref = self._replica_model_uid_to_worker.get(replica_model_uid, None)
         if worker_ref is None:
             raise ValueError(
