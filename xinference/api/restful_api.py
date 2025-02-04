@@ -943,6 +943,8 @@ class RESTfulAPI(CancelMixin):
         quantization = payload.get("quantization")
         model_type = payload.get("model_type", "LLM")
         replica = payload.get("replica", 1)
+        prefill_replica = payload.get("prefill_replica", 1)
+        decode_replica = payload.get("decode_replica", 1)
         n_gpu = payload.get("n_gpu", "auto")
         request_limits = payload.get("request_limits", None)
         peft_model_config = payload.get("peft_model_config", None)
@@ -998,6 +1000,14 @@ class RESTfulAPI(CancelMixin):
         else:
             peft_model_config = None
 
+        # Make sure disaggregated cluster need to specify the prefill and decode replica num.
+        cluster_role = await (await self._get_supervisor_ref()).get_role()
+        if cluster_role == "disaggregated" and prefill_replica is None or decode_replica is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid input. Replica must be specified for disaggregated cluster.",
+            )
+
         try:
             model_uid = await (await self._get_supervisor_ref()).launch_builtin_model(
                 model_uid=model_uid,
@@ -1008,6 +1018,8 @@ class RESTfulAPI(CancelMixin):
                 quantization=quantization,
                 model_type=model_type,
                 replica=replica,
+                prefill_replica=prefill_replica,
+                decode_replica=decode_replica,
                 n_gpu=n_gpu,
                 request_limits=request_limits,
                 wait_ready=wait_ready,
@@ -1053,7 +1065,17 @@ class RESTfulAPI(CancelMixin):
         model_type = payload.get("model_type")
         model_version = payload.get("model_version")
         replica = payload.get("replica", 1)
+        prefill_replica = payload.get("prefill_replica")
+        decode_replica = payload.get("decode_replica")
         n_gpu = payload.get("n_gpu", "auto")
+
+        # Make sure disaggregated cluster need to specify the prefill and decode replica num.
+        cluster_role = await (await self._get_supervisor_ref()).get_role()
+        if cluster_role == "disaggregated" and prefill_replica is None or decode_replica is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid input. Replica must be specified for disaggregated cluster.",
+            )
 
         try:
             model_uid = await (
@@ -1064,6 +1086,8 @@ class RESTfulAPI(CancelMixin):
                 model_type=model_type,
                 model_version=model_version,
                 replica=replica,
+                prefill_replica=prefill_replica,
+                decode_replica=decode_replica,
                 n_gpu=n_gpu,
                 wait_ready=wait_ready,
             )
@@ -1256,10 +1280,11 @@ class RESTfulAPI(CancelMixin):
 
         try:
             supervisor_ref = await self._get_supervisor_ref()
-            # if supervisor_ref._role == "disaggregated":
-            model = await supervisor_ref.get_disagg_model(model_uid)
-            # else:
-                # model = await supervisor_ref.get_model(model_uid)
+            # TODO: check get_role() function works correctly.
+            if await supervisor_ref.get_role() == "disaggregated":
+                model = await supervisor_ref.get_disagg_model(model_uid)
+            else:
+                model = await supervisor_ref.get_model(model_uid)
         except ValueError as ve:
             logger.error(str(ve), exc_info=True)
             await self._report_error_event(model_uid, str(ve))

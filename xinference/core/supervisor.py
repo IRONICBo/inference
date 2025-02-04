@@ -886,6 +886,8 @@ class SupervisorActor(xo.StatelessActor):
         model_engine: Optional[str],
         model_version: str,
         replica: int = 1,
+        prefill_replica: Optional[int] = None,
+        decode_replica: Optional[int] = None,
         n_gpu: Optional[Union[int, str]] = "auto",
         wait_ready: bool = True,
     ):
@@ -906,6 +908,8 @@ class SupervisorActor(xo.StatelessActor):
             model_type=model_type,
             replica=replica,
             n_gpu=n_gpu,
+            prefill_replica=prefill_replica,
+            decode_replica=decode_replica,
             wait_ready=wait_ready,
             model_version=model_version,
             **kwargs,
@@ -921,6 +925,8 @@ class SupervisorActor(xo.StatelessActor):
         model_engine: Optional[str],
         model_type: Optional[str],
         replica: int = 1,
+        prefill_replica: Optional[int] = None,
+        decode_replica: Optional[int] = None,
         n_gpu: Optional[Union[int, str]] = "auto",
         request_limits: Optional[int] = None,
         wait_ready: bool = True,
@@ -981,14 +987,21 @@ class SupervisorActor(xo.StatelessActor):
         if model_uid is None:
             model_uid = self._gen_model_uid(model_name)
 
-        enable_disagg: bool = self._role == "disaggregated"
-
         # Xavier-related
         enable_xavier: bool = (
             bool(kwargs.pop("enable_xavier", False))
             and model_engine is not None
             and model_engine.lower() == "vllm"
         )
+
+        # Disaggregated-related
+        enable_disagg: bool = (
+            self._role == "disaggregated"
+            and prefill_replica is not None
+            and decode_replica is not None
+            and enable_xavier
+        )
+
         store_address = None
         store_port = None
         world_size = None
@@ -1094,10 +1107,14 @@ class SupervisorActor(xo.StatelessActor):
                 worker_refs = []
                 rank_addresses = []
                 if enable_disagg:
-                    logger.info(f"Starting disagg models for {model_uid}.")
+                    logger.info(f"Starting disagg models for {model_uid} prefill replica num: {prefill_replica} decode replica num: {decode_replica}")
                     # Start prefill models, with extra replica for collective communication.
+                    # The rank 0 replica is used for collective communication.
+                    # For prefill and decode replicas, we need to count the index by replica number,
+                    # and allocate the correct gpu index for each replica.
+                    # For example, if prefill replica is 2, decode replica is 2, total replica is 4.
                     for rank, rep_model_uid in enumerate(
-                        iter_replica_model_uid(model_uid, replica+1, start=0),
+                        iter_replica_model_uid(model_uid, prefill_replica+1, start=0),
                         start=0
                     ):
                         worker_ref = (
@@ -1130,10 +1147,10 @@ class SupervisorActor(xo.StatelessActor):
 
                     # Start decode models
                     for rank, rep_model_uid in enumerate(
-                        iter_replica_model_uid(model_uid, replica*2+1, start=replica+1),
-                        start=replica+1
+                        # support xPyD replica id here
+                        iter_replica_model_uid(model_uid, prefill_replica+decode_replica+1, start=prefill_replica+1),
+                        start=prefill_replica+1
                     ):
-                        rank = replica+1
                         worker_ref = (
                             target_ip_worker_ref
                             if target_ip_worker_ref is not None
@@ -1374,6 +1391,10 @@ class SupervisorActor(xo.StatelessActor):
                 f"Model not found in the model list, uid: {replica_model_uid}"
             )
         return await worker_ref.get_model(model_uid=replica_model_uid)
+
+    @log_async(logger=logger)
+    async def get_role(self) -> str:
+        return self._role
 
     @log_async(logger=logger)
     async def get_disagg_model(self, model_uid: str) -> xo.ActorRefType["PDModelActor"]:
