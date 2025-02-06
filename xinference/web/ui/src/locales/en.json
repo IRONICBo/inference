@@ -49,6 +49,8 @@
     "nGPU": "GPU Count",
     "nGpuLayers": "N GPU Layers",
     "replica": "Replica",
+    "prefillReplica.optional": "(Optional) Prefill Replica, default is None, you need set it when in disaggregated role",
+    "decodeReplica.optional": "(Optional) Decode Replica, default is None, you need set it when in disaggregated role",
     "optionalConfigurations": "Optional Configurations",
     "modelUID.optional": "(Optional) Model UID, model name by default",
     "requestLimits.optional": "(Optional) Request Limits, the number of request limits for this model, default is None",

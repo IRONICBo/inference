@@ -943,8 +943,8 @@ class RESTfulAPI(CancelMixin):
         quantization = payload.get("quantization")
         model_type = payload.get("model_type", "LLM")
         replica = payload.get("replica", 1)
-        prefill_replica = payload.get("prefill_replica", 1)
-        decode_replica = payload.get("decode_replica", 1)
+        prefill_replica = payload.get("prefill_replica", None)
+        decode_replica = payload.get("decode_replica", None)
         n_gpu = payload.get("n_gpu", "auto")
         request_limits = payload.get("request_limits", None)
         peft_model_config = payload.get("peft_model_config", None)
@@ -969,6 +969,8 @@ class RESTfulAPI(CancelMixin):
             "gpu_idx",
             "download_hub",
             "model_path",
+            "prefill_replica",
+            "decode_replica"
         }
 
         kwargs = {

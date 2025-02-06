@@ -117,6 +117,8 @@ const ModelCard = ({
   const [nGpu, setNGpu] = useState(gpuAvailable === 0 ? 'CPU' : 'GPU')
   const [nGPULayers, setNGPULayers] = useState(-1)
   const [replica, setReplica] = useState(1)
+  const [prefillReplica, setPrefillReplica] = useState('')
+  const [decodeReplica, setDecodeReplica] = useState('')
   const [requestLimits, setRequestLimits] = useState('')
   const [workerIp, setWorkerIp] = useState('')
   const [GPUIdx, setGPUIdx] = useState('')
@@ -312,6 +314,8 @@ const ModelCard = ({
             ? 'auto'
             : parseInt(nGPU, 10),
         replica: replica,
+        prefill_replica: parseInt(prefillReplica, 10),
+        decode_replica: parseInt(decodeReplica, 10),
         request_limits:
           String(requestLimits)?.trim() === ''
             ? null
@@ -578,6 +582,8 @@ const ModelCard = ({
         n_gpu,
         n_gpu_layers,
         replica,
+        prefill_replica,
+        decode_replica,
         model_uid,
         request_limits,
         worker_ip,
@@ -603,6 +609,8 @@ const ModelCard = ({
       }
       setReplica(replica || 1)
       setModelUID(model_uid || '')
+      setPrefillReplica(prefill_replica || '')
+      setDecodeReplica(decode_replica || '')
       setRequestLimits(request_limits || '')
       setWorkerIp(worker_ip || '')
       setGPUIdx(gpu_idx?.join(',') || '')
@@ -647,6 +655,8 @@ const ModelCard = ({
     if (arr.length) {
       setModelUID(arr[0].model_uid || '')
       setReplica(arr[0].replica || 1)
+      setPrefillReplica(arr[0].prefill_replica || '')
+      setDecodeReplica(arr[0].decode_replica || '')
       setNGpu(arr[0].n_gpu === 'auto' ? 'GPU' : 'CPU')
       setGPUIdx(arr[0].gpu_idx?.join(',') || '')
       setWorkerIp(arr[0].worker_ip || '')
@@ -735,6 +745,8 @@ const ModelCard = ({
       setNGPU('auto')
       setReplica(1)
       setModelUID('')
+      setPrefillReplica('')
+      setDecodeReplica('')
       setRequestLimits('')
       setWorkerIp('')
       setGPUIdx('')
@@ -747,6 +759,8 @@ const ModelCard = ({
     } else {
       setModelUID('')
       setReplica(1)
+      setPrefillReplica('')
+      setDecodeReplica('')
       setNGpu(gpuAvailable === 0 ? 'CPU' : 'GPU')
       setGPUIdx('')
       setWorkerIp('')
@@ -1407,6 +1421,26 @@ const ModelCard = ({
                         value={modelUID}
                         label={t('launchModel.modelUID.optional')}
                         onChange={(e) => setModelUID(e.target.value)}
+                      />
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <FormControl variant="outlined" margin="normal" fullWidth>
+                      <TextField
+                        variant="outlined"
+                        value={prefillReplica}
+                        label={t('launchModel.prefillReplica.optional')}
+                        onChange={(e) => setPrefillReplica(e.target.value)}
+                      />
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <FormControl variant="outlined" margin="normal" fullWidth>
+                      <TextField
+                        variant="outlined"
+                        value={decodeReplica}
+                        label={t('launchModel.decodeReplica.optional')}
+                        onChange={(e) => setDecodeReplica(e.target.value)}
                       />
                     </FormControl>
                   </Grid>
