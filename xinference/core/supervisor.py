@@ -1021,9 +1021,9 @@ class SupervisorActor(xo.StatelessActor):
 
                 #  TODO: this will be removed and replaced by a more general solution,
                 # current default is 3 for 2 worker with 1p1d.
-                if self._role != "disaggregated":
+                if self._role == "disaggregated":
                     # for 1 p and 1 d, in each one replica
-                    world_size = replica * 2 + 1
+                    world_size = prefill_replica + decode_replica + 1
                 else:
                     world_size = replica + 1
                 logger.info(f"Going to start xavier with world size: {world_size}")
@@ -1114,7 +1114,7 @@ class SupervisorActor(xo.StatelessActor):
                     # and allocate the correct gpu index for each replica.
                     # For example, if prefill replica is 2, decode replica is 2, total replica is 4.
                     for rank, rep_model_uid in enumerate(
-                        iter_replica_model_uid(model_uid, prefill_replica+1, start=0),
+                        iter_replica_model_uid(model_uid, prefill_replica, start=0),
                         start=0
                     ):
                         worker_ref = (
@@ -1134,10 +1134,9 @@ class SupervisorActor(xo.StatelessActor):
                             logger.debug(
                                 f"Starting rank 0 model {_uid} on worker {worker_ref.address} with rank {rank}."
                             )
-                            continue
 
                         subpool_address = await _launch_one_model(
-                            worker_ref, rep_model_uid, rank
+                            worker_ref, rep_model_uid, rank+1
                         )
                         worker_refs.append((worker_ref, rep_model_uid))
                         rank_addresses.append(subpool_address)
@@ -1148,8 +1147,8 @@ class SupervisorActor(xo.StatelessActor):
                     # Start decode models
                     for rank, rep_model_uid in enumerate(
                         # support xPyD replica id here
-                        iter_replica_model_uid(model_uid, prefill_replica+decode_replica+1, start=prefill_replica+1),
-                        start=prefill_replica+1
+                        iter_replica_model_uid(model_uid, prefill_replica+decode_replica, start=prefill_replica),
+                        start=prefill_replica
                     ):
                         worker_ref = (
                             target_ip_worker_ref
@@ -1157,7 +1156,7 @@ class SupervisorActor(xo.StatelessActor):
                             else await self._choose_worker(role="decode")
                         )
                         subpool_address = await _launch_one_model(
-                            worker_ref, rep_model_uid, rank
+                            worker_ref, rep_model_uid, rank+1
                         )
                         worker_refs.append((worker_ref, rep_model_uid))
                         rank_addresses.append(subpool_address)
@@ -1410,7 +1409,7 @@ class SupervisorActor(xo.StatelessActor):
         prefill_model_ref = None
         for idx in range(replica_info.replica*2):
             replica_model_uid = build_replica_model_uid(
-                model_uid, idx+1
+                model_uid, idx
             )
             logger.debug(f"Get model from worker with _replica_model_uid_to_worker: {self._replica_model_uid_to_worker}")
 
@@ -1431,7 +1430,7 @@ class SupervisorActor(xo.StatelessActor):
         decode_model_ref = None
         for idx in range(replica_info.replica*2):
             replica_model_uid = build_replica_model_uid(
-                model_uid, idx+1
+                model_uid, idx
             )
             logger.debug(f"Get model from worker with _replica_model_uid_to_worker: {self._replica_model_uid_to_worker}")
 
@@ -1504,6 +1503,7 @@ class SupervisorActor(xo.StatelessActor):
             ret.update(await worker.list_models())
         running_model_info = {parse_replica_model_uid(k)[0]: v for k, v in ret.items()}
         logger.info(f"running_model_info: {running_model_info}")
+        logger.info(f"_model_uid_to_replica_info: {self._model_uid_to_replica_info}")
         # add replica count
         for k, v in running_model_info.items():
             v["replica"] = self._model_uid_to_replica_info[k].replica
