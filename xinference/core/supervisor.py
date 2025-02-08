@@ -1482,13 +1482,13 @@ class SupervisorActor(xo.StatelessActor):
             raise ValueError(f"Model not found in the model list, uid: {model_uid}")
         # Use rep id 0 to instead of next(replica_info.scheduler) to avoid
         # consuming the generator.
-        replica_id = 1
+        replica_id = 0
         if self._role == "disaggregated":
             replica_id = 1
         else:
             # replica = 0
             # set default is 1
-            replica_id = 1
+            replica_id = 0
         replica_model_uid = build_replica_model_uid(model_uid, replica_id)
         logger.debug(f"Describe model, model_uid: {model_uid} replica_model_uid: {replica_model_uid}")
         worker_ref = self._replica_model_uid_to_worker.get(replica_model_uid, None)
