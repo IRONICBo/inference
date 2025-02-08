@@ -1233,6 +1233,12 @@ class SupervisorActor(xo.StatelessActor):
 
         if model_uid in self._model_uid_to_replica_info:
             raise ValueError(f"Model is already in the model list, uid: {model_uid}")
+        # Update real replica number
+        if enable_disagg:
+            prefill_replica_num = prefill_replica if prefill_replica is not None else 0
+            decode_replica_num = decode_replica if decode_replica is not None else 0
+            replica = prefill_replica_num + decode_replica_num
+
         # Set replica info first for exception handler to terminate model.
         self._model_uid_to_replica_info[model_uid] = ReplicaInfo(
             replica=replica, scheduler=itertools.cycle(range(replica))
