@@ -31,6 +31,7 @@ from typing import (
     Union,
 )
 
+from ....core.model import PDModelActor
 from ....types import (
     ChatCompletion,
     ChatCompletionChunk,
@@ -233,6 +234,10 @@ class VLLMModel(LLM):
     def set_role(self, value: str):
         self._role = value
 
+    async def set_unpin_handle(self, model_uid: str, request_id: str, pd_model_actor_address: str):
+        await self._engine.set_unpin_handle(model_uid, request_id, pd_model_actor_address)
+        logger.debug(f"[vLLM] Set unpin handle for {request_id} to {pd_model_actor_address}")
+
     def load(self):
         try:
             import vllm
@@ -295,7 +300,7 @@ class VLLMModel(LLM):
 
             logger.debug(f"Start xavier for vllm with config: {self._xavier_config}")
             self._engine = XavierEngine.from_engine_args(
-                engine_args, xavier_config=self._xavier_config
+                engine_args, xavier_config=self._xavier_config,role=self._role,
             )
         else:
             engine_args = AsyncEngineArgs(
@@ -321,6 +326,10 @@ class VLLMModel(LLM):
         if model_executor := getattr(self._engine.engine, "model_executor", None):
             model_executor.shutdown()
         self._engine = None
+
+    def free_seq_cache(self, request_id: str):
+        if self._engine is not None:
+            self._engine.free_seq_cache(request_id)
 
     async def init_xavier(self):
         await self._engine.init_xavier()
@@ -610,8 +619,11 @@ class VLLMModel(LLM):
             request_id = str(uuid.uuid1())
 
         if self._role == "prefill":
+            logger.debug(f"Enter prefill, prompt: {prompt}, change prefill params to 1")
             # only for one token generation
             sampling_params.n = 1
+            sampling_params.max_tokens = 1
+            sampling_params.min_tokens = 1
             # disable stream for prefill
             stream = False
 

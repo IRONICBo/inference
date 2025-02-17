@@ -31,6 +31,7 @@ from vllm.sequence import (
     SequenceStatus,
 )
 
+from .....core.model import PDModelActor
 from .block_manager import XavierBlockManager
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,10 @@ class XavierScheduler(Scheduler):
         output_proc_callback: Optional[Callable] = None,
         xavier_config: Optional[Dict] = None,
         virtual_engine: Optional[int] = 0,
+        role: Optional[str] = "decode",
     ) -> None:
+        # Monkey patch for free seq
+        Scheduler.free_finished_seq_groups = XavierScheduler.free_finished_seq_groups
         BlockSpaceManager.get_block_space_manager_class = (
             self._get_block_space_manager_class
         )
@@ -70,6 +74,8 @@ class XavierScheduler(Scheduler):
         self._transfer_ref = None
         self._transferring: Deque[SequenceGroup] = deque()
         self._transfer_status: Dict[SequenceGroup, Set[int]] = {}
+        self._role = role
+        self._unpin_handles: Dict[str, xo.ActorRefType["PDModelActor"]] = {}
 
     async def _get_block_tracker_ref(self):
         if self._block_tracker_ref is None:
@@ -183,6 +189,13 @@ class XavierScheduler(Scheduler):
             self._transfer_status.pop(seq_group, None)
             self.waiting.appendleft(seq_group)
             self._transferring.remove(seq_group)
+
+            # Unpin prefill instance kvcache
+            unpin_handle = self._unpin_handles.get(seq_group.request_id, None)
+            if unpin_handle is not None:
+                await unpin_handle.free_prefill_model_cache(seq_group.request_id)
+            self.remove_unpin_handle(seq_group.request_id)
+
         else:
             # After the transfer is completed, update the corresponding metadata.
             self._transfer_status[seq_group] = local
@@ -194,6 +207,12 @@ class XavierScheduler(Scheduler):
             # wait for the next scheduling execution.
             self.waiting.appendleft(seq_group)
             self._transferring.remove(seq_group)
+
+            # Unpin prefill instance kvcache
+            unpin_handle = self._unpin_handles.get(seq_group.request_id, None)
+            if unpin_handle is not None:
+                await unpin_handle.free_prefill_model_cache(seq_group.request_id)
+            self.remove_unpin_handle(seq_group.request_id)
 
     @no_type_check
     async def schedule(
@@ -291,7 +310,8 @@ class XavierScheduler(Scheduler):
                     has_transferring = True
                     continue
                 else:
-                    scheduled_seq_groups.append(seq_group)
+                    import vllm.core.scheduler
+                    scheduled_seq_groups.append(vllm.core.scheduler.ScheduledSequenceGroup(seq_group, token_chunk_size))
 
             if self.cache_config.enable_prefix_caching:
                 common_computed_block_nums = (
@@ -396,14 +416,19 @@ class XavierScheduler(Scheduler):
                 if seq_group in self._transfer_status:
                     self.running.remove(seq_group)
 
+        # logger.error(f"Scheduler outputs: {scheduler_outputs.scheduled_seq_groups}")
+
         # Now that the batch has been created, we can assume all blocks in the
         # batch will have been computed before the next scheduling invocation.
         # This is because the engine assumes that a failure in model execution
         # will crash the vLLM instance / will not retry.
         for scheduled_seq_group in scheduler_outputs.scheduled_seq_groups:
-            self.block_manager.mark_blocks_as_computed(
-                scheduled_seq_group.seq_group, scheduled_seq_group.token_chunk_size
-            )
+            logger.error(f"Scheduler outputs type: {type(scheduled_seq_group)}")
+            # Check current seq_group is existing.
+            if hasattr(scheduled_seq_group, 'seq_group') and scheduled_seq_group.seq_group is not None:
+                self.block_manager.mark_blocks_as_computed(
+                    scheduled_seq_group.seq_group, scheduled_seq_group.token_chunk_size
+                )
 
         self._seq_group_metadata_cache[self.next_cache_id].reset()
 
@@ -439,3 +464,72 @@ class XavierScheduler(Scheduler):
         """
         res = super().get_num_unfinished_seq_groups()
         return res + len(self._transferring)
+
+    def free_finished_seq_groups(self) -> None:
+        # Only decode instance will auto free seq_group,
+        # For prefill instance, we will defer the free operation
+        # to the decode instance is reached.
+        if self._role == "decode":
+            remaining: Deque[SequenceGroup] = deque()
+            for seq_group in self.running:
+                self._free_finished_seq_group(seq_group)
+                if not seq_group.is_finished():
+                    remaining.append(seq_group)
+
+            self.running = remaining
+
+            # Handle async stopped sequence groups
+            # (ones that reached max model len)
+            if self._async_stopped:
+                for seq_group in self._async_stopped:
+                    self._free_seq_group_cross_attn_blocks(seq_group)
+                    self._finished_requests_ids.append(seq_group.request_id)
+
+                    # Free finished seqs
+                    self._free_finished_seqs(seq_group)
+
+                self._async_stopped.clear()
+
+    def free_seq_cache(self, request_id: str):
+        """
+        This interface is used to free the kvcache reference count in inference.
+        """
+        logger.debug("Free seq cache for request_id: {}".format(request_id))
+        for seq_group in self.running:
+            if seq_group is not None and seq_group.request_id != request_id:
+                self._free_finished_seq_group(seq_group)
+                logger.debug(
+                    "Free running seq cache for request_id: {}".format(seq_group.request_id)
+                )
+
+        for seq_group in self._transferring:
+            if seq_group is not None and seq_group.request_id != request_id:
+                self._free_finished_seq_group(seq_group)
+                logger.debug(
+                    "Free transferring seq cache for request_id: {}".format(seq_group.request_id)
+                )
+
+        for seq_group in self.waiting:
+            if seq_group is not None and seq_group.request_id != request_id:
+                self._free_finished_seq_group(seq_group)
+                logger.debug(
+                    "Free waiting seq cache for request_id: {}".format(seq_group.request_id)
+                )
+
+        for seq_group in self.swapped:
+            if seq_group is not None and seq_group.request_id != request_id:
+                self._free_finished_seq_group(seq_group)
+                logger.debug(
+                    "Free swapped seq cache for request_id: {}".format(seq_group.request_id)
+                )
+
+    async def set_unpin_handle(self, model_uid: str, request_id: str, pd_model_actor_address: str):
+        self._unpin_handles[request_id] = await xo.actor_ref(
+                address=pd_model_actor_address, uid=f"{PDModelActor.default_uid()}-{model_uid}"
+            )
+        logger.debug(f"[XaiverScheduler] Set unpin handle for request_id: {request_id}")
+
+    def remove_unpin_handle(self, request_id: str):
+        if request_id in self._unpin_handles:
+            del self._unpin_handles[request_id]
+            logger.debug(f"[XaiverScheduler] Remove unpin handle for request_id: {request_id}")
