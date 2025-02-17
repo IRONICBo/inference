@@ -1240,6 +1240,11 @@ class PDModelActor(xo.StatelessActor, CancelMixin):
     @xo.generator
     @log_async(logger=logger)
     async def generate(self, prompt: str, *args, **kwargs):
+        if "request_id" not in kwargs:
+            global_request_id = uuid.uuid4().hex
+            kwargs['request_id'] = global_request_id
+            logger.debug(f"[request {global_request_id}] Enter PDModelActor generate")
+
         await self._prefill_model.generate(prompt, *args, **kwargs)
 
         return await self._decode_model.generate(prompt, *args, **kwargs)
