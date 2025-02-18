@@ -1211,6 +1211,14 @@ class ModelActor(xo.StatelessActor, CancelMixin):
         return self._pending_requests.qsize()
 
 
+    @log_async(logger=logger)
+    async def free_model_cache(self, request_id: str):
+        "Free the seq kvcache reference count of the vLLM model."
+        from ..model.llm.vllm.core import VLLMModel as LLMVLLMModel
+        if isinstance(self._model, LLMVLLMModel):
+            self._model.free_seq_cache(request_id)
+
+
 class PDModelActor(xo.StatelessActor, CancelMixin):
     @classmethod
     def default_uid(cls):
@@ -1237,6 +1245,9 @@ class PDModelActor(xo.StatelessActor, CancelMixin):
         self._decode_model.decrease_serve_count()
         self._prefill_model.decrease_serve_count()
 
+    def free_prefill_model_cache(self, request_id: str):
+        self._prefill_model.free_model_cache(request_id)
+
     @xo.generator
     @log_async(logger=logger)
     async def generate(self, prompt: str, *args, **kwargs):
@@ -1246,5 +1257,8 @@ class PDModelActor(xo.StatelessActor, CancelMixin):
             logger.debug(f"[request {global_request_id}] Enter PDModelActor generate")
 
         await self._prefill_model.generate(prompt, *args, **kwargs)
+
+        # Async clean the prefill cache in the background.
+        asyncio.create_task(asyncio.wait_for(self.free_prefill_model_cache(global_request_id), timeout=3))
 
         return await self._decode_model.generate(prompt, *args, **kwargs)

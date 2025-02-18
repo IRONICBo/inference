@@ -51,7 +51,10 @@ class XavierScheduler(Scheduler):
         output_proc_callback: Optional[Callable] = None,
         xavier_config: Optional[Dict] = None,
         virtual_engine: Optional[int] = 0,
+        role: Optional[str] = "decode",
     ) -> None:
+        # Monkey patch for free seq
+        Scheduler.free_finished_seq_groups = XavierScheduler.free_finished_seq_groups
         BlockSpaceManager.get_block_space_manager_class = (
             self._get_block_space_manager_class
         )
@@ -70,6 +73,7 @@ class XavierScheduler(Scheduler):
         self._transfer_ref = None
         self._transferring: Deque[SequenceGroup] = deque()
         self._transfer_status: Dict[SequenceGroup, Set[int]] = {}
+        self._role = role
 
     async def _get_block_tracker_ref(self):
         if self._block_tracker_ref is None:
@@ -439,3 +443,49 @@ class XavierScheduler(Scheduler):
         """
         res = super().get_num_unfinished_seq_groups()
         return res + len(self._transferring)
+
+    def free_finished_seq_groups(self) -> None:
+        # Only decode instance will auto free seq_group,
+        # For prefill instance, we will defer the free operation
+        # to the decode instance is reached.
+        if self._role == "decode":
+            remaining: Deque[SequenceGroup] = deque()
+            for seq_group in self.running:
+                self._free_finished_seq_group(seq_group)
+                if not seq_group.is_finished():
+                    remaining.append(seq_group)
+
+            self.running = remaining
+
+            # Handle async stopped sequence groups
+            # (ones that reached max model len)
+            if self._async_stopped:
+                for seq_group in self._async_stopped:
+                    self._free_seq_group_cross_attn_blocks(seq_group)
+                    self._finished_requests_ids.append(seq_group.request_id)
+
+                    # Free finished seqs
+                    self._free_finished_seqs(seq_group)
+
+                self._async_stopped.clear()
+
+    def free_seq_cache(self, request_id: str):
+        """
+        This interface is used to free the kvcache reference count in inference.
+        """
+        logger.debug("Free seq cache for request_id: {}".format(request_id))
+        for seq_group in self.running:
+            if seq_group is not None and seq_group.request_id != request_id:
+                self._free_finished_seq_group(seq_group)
+
+        for seq_group in self._transferring:
+            if seq_group is not None and seq_group.request_id != request_id:
+                self._free_finished_seq_group(seq_group)
+
+        for seq_group in self.waiting:
+            if seq_group is not None and seq_group.request_id != request_id:
+                self._free_finished_seq_group(seq_group)
+
+        for seq_group in self.swapped:
+            if seq_group is not None and seq_group.request_id != request_id:
+                self._free_finished_seq_group(seq_group)

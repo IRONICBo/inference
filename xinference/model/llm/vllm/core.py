@@ -295,7 +295,7 @@ class VLLMModel(LLM):
 
             logger.debug(f"Start xavier for vllm with config: {self._xavier_config}")
             self._engine = XavierEngine.from_engine_args(
-                engine_args, xavier_config=self._xavier_config
+                engine_args, xavier_config=self._xavier_config,role=self._role,
             )
         else:
             engine_args = AsyncEngineArgs(
@@ -321,6 +321,10 @@ class VLLMModel(LLM):
         if model_executor := getattr(self._engine.engine, "model_executor", None):
             model_executor.shutdown()
         self._engine = None
+
+    def free_seq_cache(self, request_id: str):
+        if self._engine is not None:
+            self._engine.free_seq_cache(request_id)
 
     async def init_xavier(self):
         await self._engine.init_xavier()

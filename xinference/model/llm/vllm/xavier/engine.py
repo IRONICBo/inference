@@ -33,6 +33,7 @@ class XavierInternalEngine(_AsyncLLMEngine):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._xavier_config = kwargs["vllm_config"].xavier_config
+        self._role = kwargs["vllm_config"].role
         self.scheduler = [
             XavierScheduler(
                 self.scheduler_config,
@@ -44,6 +45,7 @@ class XavierInternalEngine(_AsyncLLMEngine):
                 else None,
                 xavier_config=self._xavier_config,
                 virtual_engine=v_id,
+                role=self._role,
             )
             for v_id in range(self.parallel_config.pipeline_parallel_size)
         ]
@@ -231,8 +233,11 @@ class XavierEngine(AsyncLLMEngine):
         usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
         stat_loggers: Optional[Dict[str, StatLoggerBase]] = None,
         xavier_config: Optional[Dict] = None,
+        # default role is decode in pd disagg inference.
+        role: Optional[str] = "decode",
     ) -> "AsyncLLMEngine":
         cls._xavier_config = xavier_config
+        cls._role = role
         return super().from_engine_args(
             engine_args, engine_config, start_engine_loop, usage_context, stat_loggers
         )
@@ -241,7 +246,11 @@ class XavierEngine(AsyncLLMEngine):
         # set xavier_config to `vllm_config`,
         # because it may be needed everywhere in the vllm internal components
         kwargs["vllm_config"].xavier_config = self._xavier_config
+        kwargs["vllm_config"].role = self._role
         super().__init__(*args, **kwargs)
 
+    def free_seq_cache(self, request_id: str):
+        for engine in self.engine.scheduler:
+            engine.free_seq_cache(request_id)
     async def init_xavier(self):
         await self.engine.model_executor.init_transfer()
