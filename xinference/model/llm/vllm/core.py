@@ -31,6 +31,7 @@ from typing import (
     Union,
 )
 
+from ....core.model import PDModelActor
 from ....types import (
     ChatCompletion,
     ChatCompletionChunk,
@@ -232,6 +233,10 @@ class VLLMModel(LLM):
 
     def set_role(self, value: str):
         self._role = value
+
+    async def set_unpin_handle(self, model_uid: str, request_id: str, pd_model_actor_address: str):
+        await self._engine.set_unpin_handle(model_uid, request_id, pd_model_actor_address)
+        logger.debug(f"[vLLM] Set unpin handle for {request_id} to {pd_model_actor_address}")
 
     def load(self):
         try:

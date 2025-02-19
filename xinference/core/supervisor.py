@@ -1457,8 +1457,9 @@ class SupervisorActor(xo.StatelessActor):
 
         pd_model_ref = await xo.create_actor(
             PDModelActor,
-            uid=gen_random_string(8),
+            uid=f"{PDModelActor.default_uid()}-{model_uid}",
             address=self.address,
+            model_uid=model_uid,
             prefill_model=prefill_model_ref,
             decode_model=decode_model_ref,
         )

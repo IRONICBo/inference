@@ -1213,10 +1213,19 @@ class ModelActor(xo.StatelessActor, CancelMixin):
 
     @log_async(logger=logger)
     async def free_model_cache(self, request_id: str):
-        "Free the seq kvcache reference count of the vLLM model."
+        """Free the seq kvcache reference count of the vLLM model."""
         from ..model.llm.vllm.core import VLLMModel as LLMVLLMModel
         if isinstance(self._model, LLMVLLMModel):
             self._model.free_seq_cache(request_id)
+
+    @log_async(logger=logger)
+    async def set_unpin_handle(self, model_uid: str, request_id: str, pd_model_actor_address: str):
+        """Set the unpin handle of the vLLM model."""
+        from ..model.llm.vllm.core import VLLMModel as LLMVLLMModel
+        if isinstance(self._model, LLMVLLMModel):
+            await self._model.set_unpin_handle(model_uid, request_id, pd_model_actor_address)
+            logger.debug(f"[PDModelActor] Set unpin handle for request {request_id} with pd model actor {pd_model_actor_address}")
+
 
 
 class PDModelActor(xo.StatelessActor, CancelMixin):
@@ -1226,9 +1235,11 @@ class PDModelActor(xo.StatelessActor, CancelMixin):
 
     def __init__(
         self,
+        model_uid: str,
         prefill_model: xo.ActorRefType["ModelActor"],
         decode_model: xo.ActorRefType["ModelActor"],
     ):
+        self._model_uid = model_uid
         self._prefill_model = prefill_model
         self._decode_model = decode_model
         logger.info(f"Initialize PDModelActor with prefill model: {prefill_model} and decode model: {decode_model}")
@@ -1245,8 +1256,10 @@ class PDModelActor(xo.StatelessActor, CancelMixin):
         self._decode_model.decrease_serve_count()
         self._prefill_model.decrease_serve_count()
 
-    def free_prefill_model_cache(self, request_id: str):
-        self._prefill_model.free_model_cache(request_id)
+    @log_async(logger=logger)
+    async def free_prefill_model_cache(self, request_id: str):
+        logger.debug(f"[PDModelActor] Free prefill model cache for request {request_id}")
+        await self._prefill_model.free_model_cache(request_id)
 
     @xo.generator
     @log_async(logger=logger)
@@ -1257,6 +1270,7 @@ class PDModelActor(xo.StatelessActor, CancelMixin):
             logger.debug(f"[request {global_request_id}] Enter PDModelActor generate")
 
         await self._prefill_model.generate(prompt, *args, **kwargs)
+        await self._decode_model.set_unpin_handle(self._model_uid, global_request_id, self.address)
 
         # Async clean the prefill cache in the background.
         asyncio.create_task(asyncio.wait_for(self.free_prefill_model_cache(global_request_id), timeout=3))

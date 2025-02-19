@@ -31,6 +31,7 @@ from vllm.sequence import (
     SequenceStatus,
 )
 
+from .....core.model import PDModelActor
 from .block_manager import XavierBlockManager
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ class XavierScheduler(Scheduler):
         self._transferring: Deque[SequenceGroup] = deque()
         self._transfer_status: Dict[SequenceGroup, Set[int]] = {}
         self._role = role
+        self._unpin_handles: Dict[str, xo.ActorRefType["PDModelActor"]] = {}
 
     async def _get_block_tracker_ref(self):
         if self._block_tracker_ref is None:
@@ -187,6 +189,13 @@ class XavierScheduler(Scheduler):
             self._transfer_status.pop(seq_group, None)
             self.waiting.appendleft(seq_group)
             self._transferring.remove(seq_group)
+
+            # Unpin prefill instance kvcache
+            unpin_handle = self._unpin_handles.get(seq_group.request_id, None)
+            if unpin_handle is not None:
+                await unpin_handle.free_prefill_model_cache(seq_group.request_id)
+            self.remove_unpin_handle(seq_group.request_id)
+
         else:
             # After the transfer is completed, update the corresponding metadata.
             self._transfer_status[seq_group] = local
@@ -198,6 +207,12 @@ class XavierScheduler(Scheduler):
             # wait for the next scheduling execution.
             self.waiting.appendleft(seq_group)
             self._transferring.remove(seq_group)
+
+            # Unpin prefill instance kvcache
+            unpin_handle = self._unpin_handles.get(seq_group.request_id, None)
+            if unpin_handle is not None:
+                await unpin_handle.free_prefill_model_cache(seq_group.request_id)
+            self.remove_unpin_handle(seq_group.request_id)
 
     @no_type_check
     async def schedule(
@@ -477,15 +492,38 @@ class XavierScheduler(Scheduler):
         for seq_group in self.running:
             if seq_group is not None and seq_group.request_id != request_id:
                 self._free_finished_seq_group(seq_group)
+                logger.debug(
+                    "Free running seq cache for request_id: {}".format(seq_group.request_id)
+                )
 
         for seq_group in self._transferring:
             if seq_group is not None and seq_group.request_id != request_id:
                 self._free_finished_seq_group(seq_group)
+                logger.debug(
+                    "Free transferring seq cache for request_id: {}".format(seq_group.request_id)
+                )
 
         for seq_group in self.waiting:
             if seq_group is not None and seq_group.request_id != request_id:
                 self._free_finished_seq_group(seq_group)
+                logger.debug(
+                    "Free waiting seq cache for request_id: {}".format(seq_group.request_id)
+                )
 
         for seq_group in self.swapped:
             if seq_group is not None and seq_group.request_id != request_id:
                 self._free_finished_seq_group(seq_group)
+                logger.debug(
+                    "Free swapped seq cache for request_id: {}".format(seq_group.request_id)
+                )
+
+    async def set_unpin_handle(self, model_uid: str, request_id: str, pd_model_actor_address: str):
+        self._unpin_handles[request_id] = await xo.actor_ref(
+                address=pd_model_actor_address, uid=f"{PDModelActor.default_uid()}-{model_uid}"
+            )
+        logger.debug(f"[XaiverScheduler] Set unpin handle for request_id: {request_id}")
+
+    def remove_unpin_handle(self, request_id: str):
+        if request_id in self._unpin_handles:
+            del self._unpin_handles[request_id]
+            logger.debug(f"[XaiverScheduler] Remove unpin handle for request_id: {request_id}")

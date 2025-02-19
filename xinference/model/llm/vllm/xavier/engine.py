@@ -23,6 +23,7 @@ from vllm.executor.executor_base import ExecutorBase
 from vllm.sequence import ExecuteModelRequest
 from vllm.usage.usage_lib import UsageContext
 
+from .....core.model import PDModelActor
 from .executor import XavierExecutor
 from .scheduler import XavierScheduler
 
@@ -248,6 +249,11 @@ class XavierEngine(AsyncLLMEngine):
         kwargs["vllm_config"].xavier_config = self._xavier_config
         kwargs["vllm_config"].role = self._role
         super().__init__(*args, **kwargs)
+
+    async def set_unpin_handle(self, model_uid: str, request_id: str, pd_model_actor_address: str):
+        for engine in self.engine.scheduler:
+            await engine.set_unpin_handle(model_uid, request_id, pd_model_actor_address)
+        logger.debug(f"[XaiverEngine] set unpin handle for {request_id} with {pd_model_actor_address}")
 
     def free_seq_cache(self, request_id: str):
         for engine in self.engine.scheduler:
