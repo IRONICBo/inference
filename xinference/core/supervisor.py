@@ -102,6 +102,7 @@ class SupervisorActor(xo.StatelessActor):
             str, xo.ActorRefType["WorkerActor"]
         ] = {}
         self._model_uid_to_replica_info: Dict[str, ReplicaInfo] = {}  # type: ignore
+        self._model_uid_to_disagg_model: Dict[str, xo.ActorRefType["PDModelActor"]] = {}  # type: ignore
         self._uptime = None
         self._lock = asyncio.Lock()
         self._role = "disaggregated"
@@ -1353,6 +1354,9 @@ class SupervisorActor(xo.StatelessActor):
         if rank0_uid in self._replica_model_uid_to_worker:
             await _terminate_one_model(rank0_uid)
 
+        # clear for disagg model
+        self._model_uid_to_disagg_model.pop(model_uid, None)
+
         collective_manager_ref = self._collective_manager_mapping.pop(model_uid, None)
         if collective_manager_ref is not None:
             try:
@@ -1404,12 +1408,18 @@ class SupervisorActor(xo.StatelessActor):
 
     @log_async(logger=logger)
     async def get_disagg_model(self, model_uid: str) -> xo.ActorRefType["PDModelActor"]:
+        # TODO: add disagg model into mapping, we do not need to recreate the actor.
         # Make sure the model name is raw
         model_uid = parse_replica_model_uid(model_uid)[0]
         # Get model from decode worker
         replica_info = self._model_uid_to_replica_info.get(model_uid, None)
         if replica_info is None:
             raise ValueError(f"Model not found in the model list, uid: {model_uid}")
+
+        # Get model from disagg model
+        disagg_model_ref = self._model_uid_to_disagg_model.get(model_uid, None)
+        if disagg_model_ref is not None:
+            return disagg_model_ref
 
         # get prefill and decode worker
         # TODO: add prefill and decode models into mapping
@@ -1463,6 +1473,7 @@ class SupervisorActor(xo.StatelessActor):
             prefill_model=prefill_model_ref,
             decode_model=decode_model_ref,
         )
+        self._model_uid_to_disagg_model[model_uid] = pd_model_ref
 
         return pd_model_ref
 

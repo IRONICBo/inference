@@ -619,8 +619,11 @@ class VLLMModel(LLM):
             request_id = str(uuid.uuid1())
 
         if self._role == "prefill":
+            logger.debug(f"Enter prefill, prompt: {prompt}, change prefill params to 1")
             # only for one token generation
             sampling_params.n = 1
+            sampling_params.max_tokens = 1
+            sampling_params.min_tokens = 1
             # disable stream for prefill
             stream = False
 

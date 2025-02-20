@@ -310,7 +310,8 @@ class XavierScheduler(Scheduler):
                     has_transferring = True
                     continue
                 else:
-                    scheduled_seq_groups.append(seq_group)
+                    import vllm.core.scheduler
+                    scheduled_seq_groups.append(vllm.core.scheduler.ScheduledSequenceGroup(seq_group, token_chunk_size))
 
             if self.cache_config.enable_prefix_caching:
                 common_computed_block_nums = (
@@ -415,14 +416,19 @@ class XavierScheduler(Scheduler):
                 if seq_group in self._transfer_status:
                     self.running.remove(seq_group)
 
+        # logger.error(f"Scheduler outputs: {scheduler_outputs.scheduled_seq_groups}")
+
         # Now that the batch has been created, we can assume all blocks in the
         # batch will have been computed before the next scheduling invocation.
         # This is because the engine assumes that a failure in model execution
         # will crash the vLLM instance / will not retry.
         for scheduled_seq_group in scheduler_outputs.scheduled_seq_groups:
-            self.block_manager.mark_blocks_as_computed(
-                scheduled_seq_group.seq_group, scheduled_seq_group.token_chunk_size
-            )
+            logger.error(f"Scheduler outputs type: {type(scheduled_seq_group)}")
+            # Check current seq_group is existing.
+            if hasattr(scheduled_seq_group, 'seq_group') and scheduled_seq_group.seq_group is not None:
+                self.block_manager.mark_blocks_as_computed(
+                    scheduled_seq_group.seq_group, scheduled_seq_group.token_chunk_size
+                )
 
         self._seq_group_metadata_cache[self.next_cache_id].reset()
 
