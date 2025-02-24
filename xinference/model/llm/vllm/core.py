@@ -300,7 +300,7 @@ class VLLMModel(LLM):
 
             logger.debug(f"Start xavier for vllm with config: {self._xavier_config}")
             self._engine = XavierEngine.from_engine_args(
-                engine_args, xavier_config=self._xavier_config,role=self._role,
+                engine_args, xavier_config=self._xavier_config, role=self._role,
             )
         else:
             engine_args = AsyncEngineArgs(

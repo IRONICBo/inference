@@ -890,6 +890,7 @@ class SupervisorActor(xo.StatelessActor):
         replica: int = 1,
         prefill_replica: Optional[int] = None,
         decode_replica: Optional[int] = None,
+        backend_type: Optional[str] = "xavier",
         n_gpu: Optional[Union[int, str]] = "auto",
         wait_ready: bool = True,
     ):
@@ -912,6 +913,7 @@ class SupervisorActor(xo.StatelessActor):
             n_gpu=n_gpu,
             prefill_replica=prefill_replica,
             decode_replica=decode_replica,
+            backend_type=backend_type,
             wait_ready=wait_ready,
             model_version=model_version,
             **kwargs,
@@ -929,6 +931,7 @@ class SupervisorActor(xo.StatelessActor):
         replica: int = 1,
         prefill_replica: Optional[int] = None,
         decode_replica: Optional[int] = None,
+        backend_type: Optional[str] = "xavier",
         n_gpu: Optional[Union[int, str]] = "auto",
         request_limits: Optional[int] = None,
         wait_ready: bool = True,
@@ -995,6 +998,7 @@ class SupervisorActor(xo.StatelessActor):
             and model_engine is not None
             and model_engine.lower() == "vllm"
         )
+        backend_type = kwargs.pop("backend_type", "xavier")
 
         # Disaggregated-related
         enable_disagg: bool = (
@@ -1062,9 +1066,13 @@ class SupervisorActor(xo.StatelessActor):
                     "world_size": world_size,
                     "store_address": store_address,
                     "store_port": store_port,
+                    "backend_type": backend_type,
                 }
                 if enable_xavier
                 else None
+            )
+            logger.info(
+                f"Launching model {_replica_model_uid} on worker {worker_ref.address} with xavier config: {xavier_config}"
             )
 
             if enable_xavier and rank == 0:

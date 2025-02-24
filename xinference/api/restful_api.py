@@ -952,6 +952,7 @@ class RESTfulAPI(CancelMixin):
         gpu_idx = payload.get("gpu_idx", None)
         download_hub = payload.get("download_hub", None)
         model_path = payload.get("model_path", None)
+        backend_type = payload.get("backend_type", "xavier")
 
         exclude_keys = {
             "model_uid",
@@ -970,12 +971,17 @@ class RESTfulAPI(CancelMixin):
             "download_hub",
             "model_path",
             "prefill_replica",
-            "decode_replica"
+            "decode_replica",
+            "backend_type",
         }
 
         kwargs = {
             key: value for key, value in payload.items() if key not in exclude_keys
         }
+
+        logger.info(
+            f"Launching model {model_name} with {model_engine} and {model_format}. params {kwargs}"
+        )
 
         if not model_name:
             raise HTTPException(
@@ -1022,6 +1028,7 @@ class RESTfulAPI(CancelMixin):
                 replica=replica,
                 prefill_replica=prefill_replica,
                 decode_replica=decode_replica,
+                backend_type=backend_type,
                 n_gpu=n_gpu,
                 request_limits=request_limits,
                 wait_ready=wait_ready,
@@ -1069,6 +1076,7 @@ class RESTfulAPI(CancelMixin):
         replica = payload.get("replica", 1)
         prefill_replica = payload.get("prefill_replica")
         decode_replica = payload.get("decode_replica")
+        backend_type = payload.get("backend_type", "xavier")
         n_gpu = payload.get("n_gpu", "auto")
 
         # Make sure disaggregated cluster need to specify the prefill and decode replica num.
@@ -1090,6 +1098,7 @@ class RESTfulAPI(CancelMixin):
                 replica=replica,
                 prefill_replica=prefill_replica,
                 decode_replica=decode_replica,
+                backend_type=backend_type,
                 n_gpu=n_gpu,
                 wait_ready=wait_ready,
             )
