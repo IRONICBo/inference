@@ -36,104 +36,29 @@ class XavierExecutor(GPUExecutorAsync):
         self._block_tracker_ref = None
 
     async def init_transfer(self):
-        """
-        In vllm, the `cache_engine` is the entity that truly manages the KV cache tensors.
-        Retrieve the necessary transmission information from the `cache_engine`.
-        """
-        transfer_ref = await self._get_transfer_ref()
-        ref_cache_engine: CacheEngine = self.driver_worker.cache_engine[0]
-        buffer_dtype = ref_cache_engine.dtype
-        buffer_device = "cpu"
-        buffer_pin_memory = is_pin_memory_available()
-        num_attn_layers = ref_cache_engine.num_attention_layers
-        kv_cache_shape = ref_cache_engine.gpu_cache[0].shape
-        assert kv_cache_shape[0] == 2
-        buffer_num = 2
-        transfer_block_num = self.vllm_config.xavier_config.get("transfer_block_num")
-        buffer_shape = (
-            transfer_block_num,
-            num_attn_layers,
-            kv_cache_shape[0],
-            *kv_cache_shape[2:],
-        )
-        await transfer_ref.setup(
-            self.driver_worker.cache_engine,
-            self.scheduler,
-            num_buffer=buffer_num,
-            buffer_shape=buffer_shape,
-            buffer_dtype=buffer_dtype,
-            buffer_device=buffer_device,
-            pin_memory=buffer_pin_memory,
-        )
-
-    async def _get_block_tracker_ref(self):
-        if self._block_tracker_ref is None:
-            block_tracker_address = self.vllm_config.xavier_config.get(
-                "block_tracker_address"
-            )
-            block_tracker_uid = self.vllm_config.xavier_config.get("block_tracker_uid")
-            self._block_tracker_ref = await xo.actor_ref(
-                address=block_tracker_address, uid=block_tracker_uid
-            )
-        return self._block_tracker_ref
-
-    async def _get_transfer_ref(self):
-        from .transfer import TransferActor
-
-        if self._transfer_ref is None:
-            transfer_address = self.vllm_config.xavier_config.get("rank_address")
-            rank = self.vllm_config.xavier_config.get("rank")
-            self._transfer_ref = await xo.actor_ref(
-                address=transfer_address, uid=f"{TransferActor.default_uid()}-{rank}"
-            )
-        return self._transfer_ref
-
-    def get_rank(self) -> int:
-        return self.vllm_config.xavier_config.get("rank")
+        backend_type = self.vllm_config.xavier_config.get("backend_type")
+        if backend_type == "xavier":
+            from .xavier_scheduler_hook import XavierEngineHook
+            self._engine_hook: XavierEngineHook = XavierEngineHook()
+            await self._engine_hook.post_execute_init(self)
+        else:
+            raise ValueError(f"Unknown backend type: {backend_type}")
 
     async def execute_model_async(
         self,
         execute_model_req: ExecuteModelRequest,
     ) -> List[Union[SamplerOutput, PoolerOutput]]:
         """
-        Collect information about the blocks involved in the execution before the vllm `ModelRunner` executes.
-        This information will be used by the tracker after execution to register the locally computed blocks.
+        Before execute model, we need to do some pre-processing.
         """
-        virtual_engine = execute_model_req.virtual_engine
-        # logger.debug(f"Execute model async, virtual_engine: {virtual_engine}")
-        block_tracker_ref = await self._get_block_tracker_ref()
-        scheduler = self.scheduler[virtual_engine]  # type: ignore
-        rank = self.get_rank()
-        executed_blocks_details: Set[Tuple[int, int]] = set()
-        for meta in execute_model_req.seq_group_metadata_list:
-            block_tables = meta.block_tables
-            for seq_id, block_ids in block_tables.items():
-                for _id in block_ids:
-                    b = scheduler.block_manager.get_block_by_block_id(seq_id, _id)
-                    # The `executed` attribute is used to prevent duplicate registration of the block.
-                    executed = scheduler.block_manager.get_block_status_by_block_id(
-                        "executed", _id
-                    )
-                    detail = (b.content_hash, b.block_id)
-                    if (b.content_hash is not None) and (not executed):
-                        executed_blocks_details.add(detail)
+        await self._engine_hook.pre_execute(self, execute_model_req)
 
         res = await super().execute_model_async(execute_model_req)
 
         # logger.debug(f"Execute model async, virtual_engine: {virtual_engine} executed_blocks_details: {executed_blocks_details}")
-        if executed_blocks_details:
-            """
-            Why not collect and register the information after execution?
-            Because after execution, the model's execution callback hook will release the block_id,
-            causing the block manager to lose access to the correct information.
-            """
-            await block_tracker_ref.register_blocks(
-                virtual_engine, list(executed_blocks_details), rank
-            )
-
-            for _, _id in executed_blocks_details:
-                scheduler.block_manager.set_block_status_by_block_id(
-                    "executed", _id, True
-                )
+        """
+        After execute model, we need to do some post-processing.
+        """
+        await self._engine_hook.post_execute(self, execute_model_req)
 
         return res
