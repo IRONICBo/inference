@@ -47,25 +47,25 @@ class XavierEngineHook(EngineHook):
             "has_transferring": False,
         }
 
-    async def _get_block_tracker_ref(self, scheduler: XavierScheduler):
-        if self._block_tracker_ref is None:
-            block_tracker_address = self._xavier_config.get("block_tracker_address")
-            block_tracker_uid = self._xavier_config.get("block_tracker_uid")
-            self._block_tracker_ref = await xo.actor_ref(
+    async def _get_scheduler_block_tracker_ref(self, scheduler: XavierScheduler):
+        if scheduler._block_tracker_ref is None:
+            block_tracker_address = scheduler._xavier_config.get("block_tracker_address")
+            block_tracker_uid = scheduler._xavier_config.get("block_tracker_uid")
+            scheduler._block_tracker_ref = await xo.actor_ref(
                 address=block_tracker_address, uid=block_tracker_uid
             )
-        return self._block_tracker_ref
+        return scheduler._block_tracker_ref
 
-    async def _get_transfer_ref(self, scheduler: XavierScheduler):
+    async def _get_scheduler_transfer_ref(self, scheduler: XavierScheduler):
         from .transfer import TransferActor
 
-        if self._transfer_ref is None:
-            transfer_address = self._xavier_config.get("rank_address")
-            rank = self._xavier_config.get("rank")
-            self._transfer_ref = await xo.actor_ref(
+        if scheduler._transfer_ref is None:
+            transfer_address = scheduler._xavier_config.get("rank_address")
+            rank = scheduler._xavier_config.get("rank")
+            scheduler._transfer_ref = await xo.actor_ref(
                 address=transfer_address, uid=f"{TransferActor.default_uid()}-{rank}"
             )
-        return self._transfer_ref
+        return scheduler._transfer_ref
 
     async def _get_transfer_details(
         self,
@@ -87,7 +87,7 @@ class XavierEngineHook(EngineHook):
         for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
             block_ids = block_tables[seq.seq_id]
             for _id in block_ids:
-                block: Block = self.block_manager.get_block_by_block_id(seq.seq_id, _id)
+                block: Block = scheduler.block_manager.get_block_by_block_id(seq.seq_id, _id)
                 detail = (block.content_hash, _id)
                 """
                 1. `block.content_hash is not None` means that the block has been filled with tokens.
@@ -102,12 +102,12 @@ class XavierEngineHook(EngineHook):
                 if (
                     (block.content_hash is not None)
                     and (
-                        not self.block_manager.get_block_status_by_block_id(
+                        not scheduler.block_manager.get_block_status_by_block_id(
                             "transferred", block.block_id
                         )
                     )
                     and (
-                        not self.block_manager.get_block_status_by_block_id(
+                        not scheduler.block_manager.get_block_status_by_block_id(
                             "executed", block.block_id
                         )
                     )
@@ -116,7 +116,7 @@ class XavierEngineHook(EngineHook):
 
         logger.debug(f"Xaiver scheduler details: {details}")
         if details:
-            tracker_ref = await self._get_block_tracker_ref()
+            tracker_ref = await self._get_scheduler_block_tracker_ref(scheduler)
             remote = await tracker_ref.query_blocks(virtual_engine, list(details))
             # Not all queried blocks have corresponding results in other replicas.
             # Therefore, it is necessary to record which local block data was actually transferred.
@@ -135,7 +135,7 @@ class XavierEngineHook(EngineHook):
     async def _do_transfer_inner(
         self, scheduler: XavierScheduler, virtual_engine: int, remote: Dict[int, Set[Tuple[int, int, int]]]
     ):
-        transfer_ref = await self._get_transfer_ref()
+        transfer_ref = await self._get_scheduler_transfer_ref(scheduler)
         for from_rank, hash_and_block_id in remote.items():
             src_to_dst: Dict[int, int] = {x[1]: x[2] for x in hash_and_block_id}
             await transfer_ref.recv(virtual_engine, from_rank, src_to_dst)
@@ -149,7 +149,7 @@ class XavierEngineHook(EngineHook):
         seq_group: SequenceGroup,
     ):
         try:
-            await self._do_transfer_inner(virtual_engine, remote)
+            await self._do_transfer_inner(scheduler, virtual_engine, remote)
         except Exception as e:
             """
             The exception here is most likely due to the sender triggering recovery during the transmission process.
@@ -158,33 +158,33 @@ class XavierEngineHook(EngineHook):
             logger.error(f"Transfer failed: {e}")
             # Force this `seq_group` to perform computation.
             seq_group.force_calculation = True
-            self._transfer_status.pop(seq_group, None)
-            self.waiting.appendleft(seq_group)
-            self._transferring.remove(seq_group)
+            scheduler._transfer_status.pop(seq_group, None)
+            scheduler.waiting.appendleft(seq_group)
+            scheduler._transferring.remove(seq_group)
 
             # Unpin prefill instance kvcache
-            unpin_handle = self._unpin_handles.get(seq_group.request_id, None)
+            unpin_handle = scheduler._unpin_handles.get(seq_group.request_id, None)
             if unpin_handle is not None:
                 await unpin_handle.free_prefill_model_cache(seq_group.request_id)
-            self.remove_unpin_handle(seq_group.request_id)
+            scheduler.remove_unpin_handle(seq_group.request_id)
 
         else:
             # After the transfer is completed, update the corresponding metadata.
-            self._transfer_status[seq_group] = local
+            scheduler._transfer_status[seq_group] = local
             for _id in local:
-                self.block_manager.set_block_status_by_block_id(
+                scheduler.block_manager.set_block_status_by_block_id(
                     "transferred", _id, True
                 )
             # After the transfer, place the `seq_group` back into the `waiting` queue to
             # wait for the next scheduling execution.
-            self.waiting.appendleft(seq_group)
-            self._transferring.remove(seq_group)
+            scheduler.waiting.appendleft(seq_group)
+            scheduler._transferring.remove(seq_group)
 
             # Unpin prefill instance kvcache
-            unpin_handle = self._unpin_handles.get(seq_group.request_id, None)
+            unpin_handle = scheduler._unpin_handles.get(seq_group.request_id, None)
             if unpin_handle is not None:
                 await unpin_handle.free_prefill_model_cache(seq_group.request_id)
-            self.remove_unpin_handle(seq_group.request_id)
+            scheduler.remove_unpin_handle(seq_group.request_id)
 
     async def pre_scheduler_prefill(
         self,
@@ -192,6 +192,12 @@ class XavierEngineHook(EngineHook):
         scheduled_seq_group: ScheduledSequenceGroup,
         block_tables: Dict[int, List[int]],
     ) -> bool:
+        """Xinference Change!!!
+        Additional data structures required by Xavier. Clean current context here.
+        """
+        self._scheduler_context["scheduled_seq_groups"] = []
+        self._scheduler_context["has_transferring"] = False
+
         """
         After completing the scheduling, the blocks have been allocated.
         Therefore, it is possible to check whether some blocks have already been computed on other replicas based on this information,
@@ -202,7 +208,6 @@ class XavierEngineHook(EngineHook):
         In the decode stage, it only applies to the last token of the block, which can negatively impact throughput.
         """
         virtual_engine = scheduler._virtual_engine
-        block_tables = scheduled_seq_group.block_tables
         seq_group = scheduled_seq_group.seq_group
         token_chunk_size = scheduled_seq_group.token_chunk_size
         is_prefill: bool = token_chunk_size != 1
@@ -242,7 +247,7 @@ class XavierEngineHook(EngineHook):
 
         if scheduler.cache_config.enable_prefix_caching:
             common_computed_block_nums = (
-                self.block_manager.get_common_computed_block_ids(
+                scheduler.block_manager.get_common_computed_block_ids(
                     seq_group.get_seqs(status=SequenceStatus.RUNNING)
                 )
             )
@@ -274,7 +279,9 @@ class XavierEngineHook(EngineHook):
         and then it can be placed back into the appropriate queue for scheduling.
         """
         has_transferring = self._scheduler_context.get("has_transferring", False)
-        if has_transferring:
+        scheduled_seq_groups = self._scheduler_context.get("scheduled_seq_groups")
+
+        if has_transferring and scheduled_seq_groups is not None:
             scheduler_outputs.scheduled_seq_groups = scheduled_seq_groups
             for seq_group in scheduler.running.copy():
                 if seq_group in scheduler._transfer_status:
@@ -302,7 +309,7 @@ class XavierEngineHook(EngineHook):
         """
         pass
 
-    async def _get_block_tracker_ref(self, executor: XavierExecutor):
+    async def _get_executor_block_tracker_ref(self, executor: XavierExecutor):
         if executor._block_tracker_ref is None:
             block_tracker_address = executor.vllm_config.xavier_config.get(
                 "block_tracker_address"
@@ -313,7 +320,7 @@ class XavierEngineHook(EngineHook):
             )
         return executor._block_tracker_ref
 
-    async def _get_transfer_ref(self, executor: XavierExecutor):
+    async def _get_executor_transfer_ref(self, executor: XavierExecutor):
         from .transfer import TransferActor
 
         if executor._transfer_ref is None:
@@ -329,7 +336,7 @@ class XavierEngineHook(EngineHook):
         In vllm, the `cache_engine` is the entity that truly manages the KV cache tensors.
         Retrieve the necessary transmission information from the `cache_engine`.
         """
-        transfer_ref = await self._get_transfer_ref(executor)
+        transfer_ref = await self._get_executor_transfer_ref(executor)
         ref_cache_engine: CacheEngine = executor.driver_worker.cache_engine[0]
         buffer_dtype = ref_cache_engine.dtype
         buffer_device = "cpu"
@@ -346,8 +353,8 @@ class XavierEngineHook(EngineHook):
             *kv_cache_shape[2:],
         )
         await transfer_ref.setup(
-            self.driver_worker.cache_engine,
-            self.scheduler,
+            executor.driver_worker.cache_engine,
+            executor.scheduler,
             num_buffer=buffer_num,
             buffer_shape=buffer_shape,
             buffer_dtype=buffer_dtype,
@@ -389,8 +396,8 @@ class XavierEngineHook(EngineHook):
 
     async def post_execute(self, executor: XavierExecutor, execute_model_req: ExecuteModelRequest):
         executed_blocks_details = self._executor_context.get("executed_blocks_details", None)
-        rank = self._get_rank()
-        block_tracker_ref = await self._get_block_tracker_ref()
+        rank = self._get_rank(executor)
+        block_tracker_ref = await self._get_executor_block_tracker_ref(executor)
         virtual_engine = execute_model_req.virtual_engine
         scheduler = executor.scheduler[virtual_engine]
 
