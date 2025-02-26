@@ -89,16 +89,16 @@ class XavierPrefixCachingBlockAllocator(PrefixCachingBlockAllocator):
 
         engine_metadata = {
             "virtual_engine": self.xavier_config.get("virtual_engine"),
-            "address": self.xavier_config.get("rank"),
         }
 
-        cache_metadata = [{
+        cache_metadatas = [{
+            "rank": self.xavier_config.get("rank"),
             "block_id": block_id,
         }]
 
         await block_tracker_ref.unregister_blocks(
             engine_metadata,
-            cache_metadata,
+            cache_metadatas,
         )
 
     def _maybe_allocate_evicted_block_id(self) -> Optional[BlockId]:

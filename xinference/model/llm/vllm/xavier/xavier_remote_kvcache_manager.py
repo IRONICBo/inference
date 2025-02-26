@@ -87,7 +87,7 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
 
 
     def register_blocks(
-        self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]]
+        self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ):
         """
         Used to register metadata in the cache manager.
@@ -95,7 +95,18 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         engine_metadata: virtual engine for llm backend, used to choose engine by
         cache_metadata: key value for this kvcache metadata, maybe contains hash_content, prefix promopt and so on.
         """
-        pass
+        virtual_engine = engine_metadata.get("virtual_engine")
+        rank = engine_metadata.get("rank")
+        executed_blocks_details = [
+            (content_hash, block_id)
+            for content_hash, block_id in cache_metadatas
+        ]
+
+        self._block_tracker_ref.register_blocks(
+            virtual_engine,
+            executed_blocks_details,
+            rank,
+        )
 
     def write_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]], cache_data: List[torch.Tensor]
@@ -107,10 +118,11 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         cache_metadata: key value for this kvcache metadata, maybe contains hash_content, prefix promopt and so on.
         cache_data: a list of kvcache data, espically for decoder llm each layer.
         """
+        # In P2P xavier, we do not need to write cache to anywhere.
         pass
 
     def query_blocks(
-        self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]]
+        self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ) -> List[Dict[str, Union[str, int]]]:
         """
         Used to query cache metadata from remote storage.
@@ -121,7 +133,16 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         return:
         remote: a dict of remote cache metadata, .
         """
-        pass
+        virtual_engine = engine_metadata.get("virtual_engine")
+        executed_blocks_details = [
+            (content_hash, block_id)
+            for content_hash, block_id in cache_metadatas
+        ]
+
+        return self._block_tracker_ref.query_blocks(
+            virtual_engine,
+            executed_blocks_details,
+        )
 
     def read_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]]
@@ -137,8 +158,13 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         2. a dict of block id to swap in index.
         3. A full buffer reference's metadata.
         """
-        self._transfer_ref.read_blocks(
-            engine_metadata, cache_metadata
+        from_rank = cache_metadata.get("from_rank")
+        remote_block_metadata = cache_metadata.get("remote_block_metadata")
+        src_to_dst: Dict[int, int] = {x[1]: x[2] for x in remote_block_metadata}
+
+        return self._transfer_ref.read_blocks(
+            from_rank,
+            src_to_dst
         )
 
     def free_blocks(
@@ -146,12 +172,15 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
     ):
         """
         Used to free buffer metadata from current storage
+
+        buffer_metadata: a dict of buffer metadata, maybe contains cpu_buf_index and so on.
         """
-        pass
+        cpu_buf_index_dict = buffer_metadata.get("cpu_buf_index_dict")
+        self._transfer_ref.free_buffer_index(cpu_buf_index_dict)
 
 
     def unregister_blocks(
-        self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]]
+        self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ):
         """
         Used to remove metadata from remote storage
@@ -159,11 +188,19 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         engine_metadata: virtual engine for llm backend, used to choose engine by
         cache_metadata: key value for this kvcache metadata, maybe contains hash_content, prefix promopt and so on.
         """
-        pass
+        virtual_engine = engine_metadata.get("virtual_engine")
 
+        for cache_metadata in cache_metadatas:
+            rank = cache_metadata.get("rank")
+            block_id = cache_metadata.get("block_id")
+            self._block_tracker_ref.unregister_block(
+                virtual_engine,
+                rank,
+                block_id,
+            )
 
     def remove_blocks(
-        self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]]
+        self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ):
         """
         Used to remove cache metadata from remote storage
@@ -171,20 +208,5 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         engine_metadata: virtual engine for llm backend, used to choose engine by
         cache_metadata: key value for this kvcache metadata, maybe contains hash_content, prefix promopt and so on.
         """
-        pass
-
-    def unregister_rank(self, rank_metada: Dict[str, Union[str, int]]):
-        """
-        Used to unregister p2p components.
-
-        rank_metada: rank metadata, used to specify the rank to be unregistered.
-        """
-        pass
-
-    def register_rank(self, rank_metada: Dict[str, Union[str, int]]):
-        """
-        Used to register p2p components.
-
-        rank_metada: rank metadata, used to specify the rank to be unregistered.
-        """
+        # In P2P xavier, we do not need to remove cache from anywhere.
         pass

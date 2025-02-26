@@ -117,12 +117,12 @@ class XavierEngineHook(EngineHook):
             engine_metadata = {
                 "virtual_engine": virtual_engine,
             }
-            cache_metadata: List[Dict[str, Union[str, int]]] = [
+            cache_metadatas: List[Dict[str, Union[str, int]]] = [
                 {"content_hash": content_hash, "block_id": block_id}
                 for content_hash, block_id in details
             ]
             tracker_ref = await self._get_scheduler_block_tracker_ref(scheduler)
-            remote = await tracker_ref.query_blocks(engine_metadata, cache_metadata)
+            remote = await tracker_ref.query_blocks(engine_metadata, cache_metadatas)
             # Not all queried blocks have corresponding results in other replicas.
             # Therefore, it is necessary to record which local block data was actually transferred.
             local: Set[int] = set()
@@ -182,9 +182,10 @@ class XavierEngineHook(EngineHook):
         transfer_ref: XavierRemoteKVCacheManager,
         virtual_engine: int,
         from_rank: int,
-        src_to_dst: Dict[int, int],
+        local: Set[int],
+        remote_block_metadata: Dict[int, int],
     ):
-        block_ids = self._get_swap_block_ids(src_to_dst, is_sender=False)
+        block_ids = list(local)
         self._incr_count_for_block_id(virtual_engine, block_ids)
         cache_engine = self._cache_engine[virtual_engine]
 
@@ -192,24 +193,27 @@ class XavierEngineHook(EngineHook):
             "virtual_engine": virtual_engine,
         }
         cache_metadata: List[Dict[str, Union[str, int]]] = [{
-            "src_to_dst": src_to_dst,
             "from_rank": from_rank,
+            "remote_block_metadata": remote_block_metadata,
         }]
 
         try:
-            recvbuf, recv_block_ids, cpu_buf_index_dict = transfer_ref.read_blocks(engine_metadata, cache_metadata)
+            recvbuf, recv_block_ids, cpu_buf_index = transfer_ref.read_blocks(engine_metadata, cache_metadata)
             self._swap_in_from_buffer(cache_engine, recvbuf, recv_block_ids)
         finally:
             self._decr_count_for_block_id(virtual_engine, block_ids)
-            transfer_ref.free_blocks(cpu_buf_index_dict)
+            buffer_metadata = {
+                "cpu_buf_index_dict": cpu_buf_index,
+            }
+            transfer_ref.free_blocks(buffer_metadata)
 
     async def _do_transfer_inner(
-        self, scheduler: XavierScheduler, virtual_engine: int, remote: Dict[int, Set[Tuple[int, int, int]]]
+        self, scheduler: XavierScheduler, virtual_engine: int, local: Set[int], remote: Dict[int, Set[Tuple[int, int, int]]]
     ):
         transfer_ref = await self._get_scheduler_transfer_ref(scheduler)
-        for from_rank, hash_and_block_id in remote.items():
-            src_to_dst: Dict[int, int] = {x[1]: x[2] for x in hash_and_block_id}
-            await self._swap_to_cache_engine(transfer_ref, virtual_engine, from_rank, src_to_dst)
+        # In xaiver remote_block_metadata is hash_and_block_id
+        for from_rank, remote_block_metadata in remote.items():
+            await self._swap_to_cache_engine(transfer_ref, virtual_engine, from_rank, local, remote_block_metadata)
 
     async def _do_transfer(
         self,
@@ -220,7 +224,7 @@ class XavierEngineHook(EngineHook):
         seq_group: SequenceGroup,
     ):
         try:
-            await self._do_transfer_inner(scheduler, virtual_engine, remote)
+            await self._do_transfer_inner(scheduler, virtual_engine, local, remote)
         except Exception as e:
             """
             The exception here is most likely due to the sender triggering recovery during the transmission process.
@@ -482,13 +486,13 @@ class XavierEngineHook(EngineHook):
             """
             engine_metadata = {
                 "virtual_engine": virtual_engine,
-                "address": rank,
+                "rank": rank,
             }
-            cache_metadata = executed_blocks_details
+            cache_metadatas = executed_blocks_details
 
             await block_tracker_ref.register_blocks(
                 engine_metadata,
-                cache_metadata,
+                cache_metadatas,
             )
 
             for _, _id in executed_blocks_details:

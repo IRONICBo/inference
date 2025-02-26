@@ -13,7 +13,7 @@
 # limitations under the License.
 import random
 from logging import getLogger
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import torch
 import xoscar as xo
@@ -22,8 +22,16 @@ logger = getLogger(__name__)
 
 
 class RemoteKVCacheManager:
+    async def setup(
+        self,
+        xavier_config: Dict[str, Any],
+        transfer_metadata: Dict[str, Any],
+        block_tracker_metadata: Dict[str, Any],
+    ):
+        pass
+
     def register_blocks(
-        self, engine_metadata: List[Dict[str, Union[str, int]]], cache_metadata: List[Dict[str, Union[str, int]]]
+        self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ):
         """
         Used to register metadata in the cache manager.
@@ -34,7 +42,7 @@ class RemoteKVCacheManager:
         pass
 
     def write_blocks(
-        self, engine_metadata: List[Dict[str, Union[str, int]]], cache_metadata: List[Dict[str, Union[str, int]]], cache_data: List[torch.Tensor]
+        self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]], cache_data: List[torch.Tensor]
     ):
         """
         Used to write cache data to the storage.
@@ -46,7 +54,7 @@ class RemoteKVCacheManager:
         pass
 
     def query_blocks(
-        self, engine_metadata: List[Dict[str, Union[str, int]]], cache_metadata: List[Dict[str, Union[str, int]]]
+        self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ) -> List[Dict[str, Union[str, int]]]:
         """
         Used to query cache metadata from remote storage.
@@ -60,8 +68,8 @@ class RemoteKVCacheManager:
         pass
 
     def read_blocks(
-        self, engine_metadata: List[Dict[str, Union[str, int]]], cache_metadata: List[Dict[str, Union[str, int]]]
-    ) -> List[torch.Tensor]:
+        self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]]
+    ) -> Tuple[torch.Tensor, Dict[int, int], Dict[str, int]]:
         """
         Used to read cache metadata from remote storage, these data will be read at the buffer in self._buffer
 
@@ -73,8 +81,18 @@ class RemoteKVCacheManager:
         """
         pass
 
+    def free_blocks(
+        self, buffer_metadata:  Dict[str, int]
+    ):
+        """
+        Used to free buffer metadata from current storage
+
+        buffer_metadata: a dict of buffer metadata, maybe contains cpu_buf_index and so on.
+        """
+        pass
+
     def unregister_blocks(
-        self, engine_metadata: List[Dict[str, Union[str, int]]], cache_metadata: List[Dict[str, Union[str, int]]]
+        self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ):
         """
         Used to remove metadata from remote storage
@@ -84,30 +102,13 @@ class RemoteKVCacheManager:
         """
         pass
 
-
     def remove_blocks(
-        self, engine_metadata: List[Dict[str, Union[str, int]]], cache_metadata: List[Dict[str, Union[str, int]]]
+        self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ):
         """
         Used to remove cache metadata from remote storage
 
         engine_metadata: virtual engine for llm backend, used to choose engine by
         cache_metadata: key value for this kvcache metadata, maybe contains hash_content, prefix promopt and so on.
-        """
-        pass
-
-    def unregister_rank(self, rank_metada: Dict[str, Union[str, int]]):
-        """
-        Used to unregister p2p components.
-
-        rank_metada: rank metadata, used to specify the rank to be unregistered.
-        """
-        pass
-
-    def register_ranks(self, rank_metada: Dict[str, Union[str, int]]):
-        """
-        Used to register p2p components.
-
-        rank_metada: rank metadata, used to specify the rank to be unregistered.
         """
         pass
