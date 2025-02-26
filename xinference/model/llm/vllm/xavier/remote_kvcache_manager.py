@@ -21,14 +21,7 @@ import xoscar as xo
 logger = getLogger(__name__)
 
 
-class RemoteKVCacheManager(xo.StatelessActor):
-    @classmethod
-    def default_uid(cls):
-        return f"kvcache-manager-actor"
-
-    def __init__(self):
-        super().__init__()
-
+class RemoteKVCacheManager:
     def register_blocks(
         self, engine_metadata: List[Dict[str, Union[str, int]]], cache_metadata: List[Dict[str, Union[str, int]]]
     ):

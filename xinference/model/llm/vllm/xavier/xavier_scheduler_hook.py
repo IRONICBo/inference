@@ -25,6 +25,7 @@ from vllm.sequence import (
 from .xavier_remote_kvcache_manager import XavierRemoteKVCacheManager
 from .executor import XavierExecutor
 from .scheduler import XavierScheduler
+from .transfer import TransferActor
 from .scheduler_hook import EngineHook
 
 logger = logging.getLogger(__name__)
@@ -52,24 +53,16 @@ class XavierEngineHook(EngineHook):
             "has_transferring": False,
         }
 
-    async def _get_scheduler_block_tracker_ref(self, scheduler: XavierScheduler):
+    async def _get_scheduler_block_tracker_ref(self, scheduler: XavierScheduler) -> XavierRemoteKVCacheManager:
         if scheduler._block_tracker_ref is None:
-            block_tracker_address = scheduler._xavier_config.get("block_tracker_address")
-            block_tracker_uid = scheduler._xavier_config.get("block_tracker_uid")
-            scheduler._block_tracker_ref = await xo.actor_ref(
-                address=block_tracker_address, uid=block_tracker_uid
-            )
+            scheduler._block_tracker_ref = XavierRemoteKVCacheManager()
+            await scheduler._block_tracker_ref.setup(scheduler._xavier_config)
         return scheduler._block_tracker_ref
 
-    async def _get_scheduler_transfer_ref(self, scheduler: XavierScheduler):
-        from .transfer import TransferActor
-
+    async def _get_scheduler_transfer_ref(self, scheduler: XavierScheduler) -> XavierRemoteKVCacheManager:
         if scheduler._transfer_ref is None:
-            transfer_address = scheduler._xavier_config.get("rank_address")
-            rank = scheduler._xavier_config.get("rank")
-            scheduler._transfer_ref = await xo.actor_ref(
-                address=transfer_address, uid=f"{TransferActor.default_uid()}-{rank}"
-            )
+            scheduler._transfer_ref = XavierRemoteKVCacheManager()
+            await scheduler._transfer_ref.setup(scheduler._xavier_config)
         return scheduler._transfer_ref
 
     async def _get_transfer_details(
@@ -186,7 +179,7 @@ class XavierEngineHook(EngineHook):
 
     async def _swap_to_cache_engine(
         self,
-        kvcache_manager: XavierRemoteKVCacheManager,
+        transfer_ref: XavierRemoteKVCacheManager,
         virtual_engine: int,
         from_rank: int,
         src_to_dst: Dict[int, int],
@@ -204,11 +197,11 @@ class XavierEngineHook(EngineHook):
         }]
 
         try:
-            recvbuf, recv_block_ids, cpu_buf_index_dict = kvcache_manager.read_blocks(engine_metadata, cache_metadata)
+            recvbuf, recv_block_ids, cpu_buf_index_dict = transfer_ref.read_blocks(engine_metadata, cache_metadata)
             self._swap_in_from_buffer(cache_engine, recvbuf, recv_block_ids)
         finally:
             self._decr_count_for_block_id(virtual_engine, block_ids)
-            kvcache_manager.free_blocks(cpu_buf_index_dict)
+            transfer_ref.free_blocks(cpu_buf_index_dict)
 
     async def _do_transfer_inner(
         self, scheduler: XavierScheduler, virtual_engine: int, remote: Dict[int, Set[Tuple[int, int, int]]]
@@ -387,26 +380,16 @@ class XavierEngineHook(EngineHook):
         """
         pass
 
-    async def _get_executor_block_tracker_ref(self, executor: XavierExecutor):
+    async def _get_executor_block_tracker_ref(self, executor: XavierExecutor) -> XavierRemoteKVCacheManager:
         if executor._block_tracker_ref is None:
-            block_tracker_address = executor.vllm_config.xavier_config.get(
-                "block_tracker_address"
-            )
-            block_tracker_uid = executor.vllm_config.xavier_config.get("block_tracker_uid")
-            executor._block_tracker_ref = await xo.actor_ref(
-                address=block_tracker_address, uid=block_tracker_uid
-            )
+            executor._block_tracker_ref = XavierRemoteKVCacheManager()
+            await executor._block_tracker_ref.setup(executor.vllm_config.xavier_config)
         return executor._block_tracker_ref
 
-    async def _get_executor_transfer_ref(self, executor: XavierExecutor):
-        from .transfer import TransferActor
-
+    async def _get_executor_transfer_ref(self, executor: XavierExecutor) -> XavierRemoteKVCacheManager:
         if executor._transfer_ref is None:
-            transfer_address = executor.vllm_config.xavier_config.get("rank_address")
-            rank = executor.vllm_config.xavier_config.get("rank")
-            executor._transfer_ref = await xo.actor_ref(
-                address=transfer_address, uid=f"{TransferActor.default_uid()}-{rank}"
-            )
+            executor._transfer_ref = XavierRemoteKVCacheManager()
+            await executor._transfer_ref.setup(executor.vllm_config.xavier_config)
         return executor._transfer_ref
 
     async def post_execute_init(self, executor: XavierExecutor):
@@ -434,14 +417,19 @@ class XavierEngineHook(EngineHook):
         self._num_attn_layers = num_attn_layers
         self._cache_engine = executor.driver_worker.cache_engine
 
+        transfer_metadata = {
+            "cache_engine": executor.driver_worker.cache_engine,
+            "scheduler": executor.scheduler,
+            "num_buffer": buffer_num,
+            "buffer_shape": buffer_shape,
+            "buffer_dtype": buffer_dtype,
+            "buffer_device": buffer_device,
+            "pin_memory": buffer_pin_memory,
+        }
+
         await transfer_ref.setup(
-            executor.driver_worker.cache_engine,
-            executor.scheduler,
-            num_buffer=buffer_num,
-            buffer_shape=buffer_shape,
-            buffer_dtype=buffer_dtype,
-            buffer_device=buffer_device,
-            pin_memory=buffer_pin_memory,
+            xavier_config=executor.vllm_config.xavier_config,
+            transfer_metadata=transfer_metadata,
         )
 
     def _get_rank(self, executor: XavierExecutor) -> int:

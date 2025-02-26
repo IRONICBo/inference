@@ -21,6 +21,7 @@ from vllm.core.scheduler import Scheduler
 from vllm.utils import TORCH_DTYPE_TO_NUMPY_DTYPE, Device
 from vllm.worker.cache_engine import CacheEngine
 
+from .block_tracker import VLLMBlockTracker
 from .transfer import TransferActor
 from .executor import XavierExecutor
 from .remote_kvcache_manager import RemoteKVCacheManager
@@ -29,25 +30,24 @@ logger = getLogger(__name__)
 
 
 class XavierRemoteKVCacheManager(RemoteKVCacheManager):
-    @classmethod
-    def default_uid(cls):
-        return f"kvcache-manager-actor"
-
     def __init__(self):
         super().__init__()
 
         self._transfer_ref: Optional[xo.ActorRefType["TransferActor"]] = None
+        self._block_tracker_ref: Optional[xo.ActorRefType["VLLMBlockTracker"]] = None
 
     async def setup(
         self,
         xavier_config: Dict[str, Any],
         transfer_metadata: Dict[str, Any],
+        block_tracker_metadata: Dict[str, Any],
     ):
         """
-        Setup current transfer metadata to the cache manager.
+        Lazy setup actor reference with transfer actor and tracker actor.
         """
         from .transfer import TransferActor
 
+        # Get transfer actor reference.
         if self._transfer_ref is None:
             transfer_address = xavier_config.get("rank_address")
             rank = xavier_config.get("rank")
@@ -55,23 +55,36 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
                 address=transfer_address, uid=f"{TransferActor.default_uid()}-{rank}"
             )
 
-        cache_engine = transfer_metadata.get("cache_engine")
-        scheduler = transfer_metadata.get("scheduler")
-        num_buffer = transfer_metadata.get("num_buffer")
-        buffer_shape = transfer_metadata.get("buffer_shape")
-        buffer_dtype = transfer_metadata.get("buffer_dtype")
-        buffer_device = transfer_metadata.get("buffer_device")
-        pin_memory = transfer_metadata.get("pin_memory")
+            # Setup with transfer actor metadata.
+            if transfer_metadata is not None:
+                cache_engine = transfer_metadata.get("cache_engine")
+                scheduler = transfer_metadata.get("scheduler")
+                num_buffer = transfer_metadata.get("num_buffer")
+                buffer_shape = transfer_metadata.get("buffer_shape")
+                buffer_dtype = transfer_metadata.get("buffer_dtype")
+                buffer_device = transfer_metadata.get("buffer_device")
+                pin_memory = transfer_metadata.get("pin_memory")
 
-        self._transfer_ref.setup(
-            cache_engine,
-            scheduler,
-            num_buffer=num_buffer,
-            buffer_shape=buffer_shape,
-            buffer_dtype=buffer_dtype,
-            buffer_device=buffer_device,
-            pin_memory=pin_memory,
-        )
+                self._transfer_ref.setup(
+                    cache_engine,
+                    scheduler,
+                    num_buffer=num_buffer,
+                    buffer_shape=buffer_shape,
+                    buffer_dtype=buffer_dtype,
+                    buffer_device=buffer_device,
+                    pin_memory=pin_memory,
+                )
+
+        # Get block tracker actor reference.
+        if self._block_tracker_ref is None:
+            block_tracker_address = xavier_config.get(
+                "block_tracker_address"
+            )
+            block_tracker_uid = xavier_config.get("block_tracker_uid")
+            self._block_tracker_ref = await xo.actor_ref(
+                address=block_tracker_address, uid=block_tracker_uid
+            )
+
 
     def register_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]]

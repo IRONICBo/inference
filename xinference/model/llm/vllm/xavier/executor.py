@@ -21,6 +21,7 @@ from vllm.sequence import ExecuteModelRequest, PoolerOutput
 from vllm.utils import is_pin_memory_available
 from vllm.worker.cache_engine import CacheEngine
 
+from .xavier_remote_kvcache_manager import XavierRemoteKVCacheManager
 if TYPE_CHECKING:
     from .scheduler import XavierScheduler
 
@@ -32,8 +33,8 @@ class XavierExecutor(GPUExecutorAsync):
 
     def _init_executor(self) -> None:
         super()._init_executor()
-        self._transfer_ref = None
-        self._block_tracker_ref = None
+        self._transfer_ref: XavierRemoteKVCacheManager = None
+        self._block_tracker_ref: XavierRemoteKVCacheManager = None
 
     async def init_transfer(self):
         backend_type = self.vllm_config.xavier_config.get("backend_type")

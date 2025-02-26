@@ -31,6 +31,7 @@ from vllm.sequence import (
     SequenceStatus,
 )
 
+from .xavier_remote_kvcache_manager import XavierRemoteKVCacheManager
 from .....core.model import PDModelActor
 from .block_manager import XavierBlockManager
 
@@ -80,8 +81,8 @@ class XavierScheduler(Scheduler):
         self._scheduler_hook.post_scheduler_init(self)
         self._virtual_engine = virtual_engine
         # Xavier Transfer related
-        self._block_tracker_ref = None
-        self._transfer_ref = None
+        self._block_tracker_ref: XavierRemoteKVCacheManager = None
+        self._transfer_ref: XavierRemoteKVCacheManager = None
         self._transferring: Deque[SequenceGroup] = deque()
         self._transfer_status: Dict[SequenceGroup, Set[int]] = {}
         self._role = role
