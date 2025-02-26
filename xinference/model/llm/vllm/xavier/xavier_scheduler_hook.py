@@ -1,14 +1,16 @@
 import asyncio
 from collections import deque
 import logging
-from typing import Any, Deque, Dict, List, Set, Tuple
+from typing import Any, Deque, Dict, List, Set, Tuple, Union
 
+import torch
 import xoscar as xo
 from vllm.executor.gpu_executor import GPUExecutorAsync
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.sequence import ExecuteModelRequest, PoolerOutput
 from vllm.utils import is_pin_memory_available
 from vllm.core.block.interfaces import Block
+from vllm.utils import TORCH_DTYPE_TO_NUMPY_DTYPE, Device
 from vllm.core.scheduler import SchedulerOutputs, ScheduledSequenceGroup
 from vllm.worker.cache_engine import CacheEngine
 from vllm.sequence import (
@@ -20,6 +22,7 @@ from vllm.sequence import (
     SequenceStatus,
 )
 
+from .xavier_remote_kvcache_manager import XavierRemoteKVCacheManager
 from .executor import XavierExecutor
 from .scheduler import XavierScheduler
 from .scheduler_hook import EngineHook
@@ -33,6 +36,8 @@ class XavierEngineHook(EngineHook):
         # Used to store the information collected during the hook.
         self._executor_context: Dict[str, Any] = {}
         self._scheduler_context: Dict[str, Any] = {}
+        self._swap_stream = torch.cuda.Stream()
+        self._num_attn_layers = 0
 
     def post_scheduler_init(self, scheduler: XavierScheduler):
         scheduler._block_tracker_ref = None
@@ -116,8 +121,15 @@ class XavierEngineHook(EngineHook):
 
         logger.debug(f"Xaiver scheduler details: {details}")
         if details:
+            engine_metadata = {
+                "virtual_engine": virtual_engine,
+            }
+            cache_metadata: List[Dict[str, Union[str, int]]] = [
+                {"content_hash": content_hash, "block_id": block_id}
+                for content_hash, block_id in details
+            ]
             tracker_ref = await self._get_scheduler_block_tracker_ref(scheduler)
-            remote = await tracker_ref.query_blocks(virtual_engine, list(details))
+            remote = await tracker_ref.query_blocks(engine_metadata, cache_metadata)
             # Not all queried blocks have corresponding results in other replicas.
             # Therefore, it is necessary to record which local block data was actually transferred.
             local: Set[int] = set()
@@ -132,13 +144,79 @@ class XavierEngineHook(EngineHook):
         else:
             return set(), dict()
 
+    @staticmethod
+    def _get_swap_block_ids(src_to_dst: Dict[int, int], is_sender: bool) -> List[int]:
+        return list(sorted([r if is_sender else l for r, l in src_to_dst.items()]))
+
+    def _incr_count_for_block_id(self, virtual_engine: int, block_ids: List[int]):
+        """
+        The reference count of the `block_id` involved in the transfer is incremented by 1
+        to ensure it is not reclaimed.
+        """
+        scheduler = self._scheduler[virtual_engine]  # type: ignore
+        gpu_allocator = scheduler.block_manager.block_allocator._allocators[Device.GPU]
+
+        for _id in block_ids:
+            gpu_allocator._refcounter.incr(_id)
+
+    def _decr_count_for_block_id(self, virtual_engine: int, block_ids: List[int]):
+        """
+        After the transfer, the reference count is decremented by 1.
+        """
+        scheduler = self._scheduler[virtual_engine]  # type: ignore
+        gpu_allocator = scheduler.block_manager.block_allocator._allocators[Device.GPU]
+
+        for _id in block_ids:
+            gpu_allocator._refcounter.decr(_id)
+
+    def _swap_in_from_buffer(
+        self, cache_engine: CacheEngine, cpu_buf: torch.Tensor, block_ids: List[int]
+    ) -> None:
+        src_to_dst = torch.tensor(
+            [(idx, block_num) for idx, block_num in enumerate(block_ids)],
+            device="cpu",
+            dtype=torch.int64,
+        ).view(-1, 2)
+        with torch.cuda.stream(self._swap_stream):
+            for i in range(self.num_attn_layers):
+                cache_engine.attn_backend.swap_blocks(
+                    cpu_buf[i], cache_engine.gpu_cache[i], src_to_dst
+                )
+        torch.cuda.Stream.synchronize(self._swap_stream)
+
+    async def _swap_to_cache_engine(
+        self,
+        kvcache_manager: XavierRemoteKVCacheManager,
+        virtual_engine: int,
+        from_rank: int,
+        src_to_dst: Dict[int, int],
+    ):
+        block_ids = self._get_swap_block_ids(src_to_dst, is_sender=False)
+        self._incr_count_for_block_id(virtual_engine, block_ids)
+        cache_engine = self._cache_engine[virtual_engine]
+
+        engine_metadata = {
+            "virtual_engine": virtual_engine,
+        }
+        cache_metadata: List[Dict[str, Union[str, int]]] = [{
+            "src_to_dst": src_to_dst,
+            "from_rank": from_rank,
+        }]
+
+        try:
+            recvbuf, recv_block_ids, cpu_buf_index_dict = kvcache_manager.read_blocks(engine_metadata, cache_metadata)
+            self._swap_in_from_buffer(cache_engine, recvbuf, recv_block_ids)
+        finally:
+            self._decr_count_for_block_id(virtual_engine, block_ids)
+            kvcache_manager.free_blocks(cpu_buf_index_dict)
+
     async def _do_transfer_inner(
         self, scheduler: XavierScheduler, virtual_engine: int, remote: Dict[int, Set[Tuple[int, int, int]]]
     ):
         transfer_ref = await self._get_scheduler_transfer_ref(scheduler)
         for from_rank, hash_and_block_id in remote.items():
             src_to_dst: Dict[int, int] = {x[1]: x[2] for x in hash_and_block_id}
-            await transfer_ref.recv(virtual_engine, from_rank, src_to_dst)
+            await self._swap_to_cache_engine(transfer_ref, virtual_engine, from_rank, src_to_dst)
 
     async def _do_transfer(
         self,
@@ -352,6 +430,10 @@ class XavierEngineHook(EngineHook):
             kv_cache_shape[0],
             *kv_cache_shape[2:],
         )
+
+        self._num_attn_layers = num_attn_layers
+        self._cache_engine = executor.driver_worker.cache_engine
+
         await transfer_ref.setup(
             executor.driver_worker.cache_engine,
             executor.scheduler,
@@ -391,8 +473,11 @@ class XavierEngineHook(EngineHook):
                         executed_blocks_details.add(detail)
 
         # Add to hook context
+        executed_blocks_details: List[Dict[str, Union[str, int]]] = [
+            {"content_hash": content_hash, "block_id": block_id}
+            for content_hash, block_id in executed_blocks_details
+        ]
         self._executor_context["executed_blocks_details"] = executed_blocks_details
-
 
     async def post_execute(self, executor: XavierExecutor, execute_model_req: ExecuteModelRequest):
         executed_blocks_details = self._executor_context.get("executed_blocks_details", None)
@@ -407,8 +492,15 @@ class XavierEngineHook(EngineHook):
             Because after execution, the model's execution callback hook will release the block_id,
             causing the block manager to lose access to the correct information.
             """
+            engine_metadata = {
+                "virtual_engine": virtual_engine,
+                "address": rank,
+            }
+            cache_metadata = executed_blocks_details
+
             await block_tracker_ref.register_blocks(
-                virtual_engine, list(executed_blocks_details), rank
+                engine_metadata,
+                cache_metadata,
             )
 
             for _, _id in executed_blocks_details:
