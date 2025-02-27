@@ -205,7 +205,7 @@ class XavierEngineHook(EngineHook):
             buffer_metadata = {
                 "cpu_buf_index_dict": cpu_buf_index,
             }
-            transfer_ref.free_blocks(buffer_metadata)
+            await transfer_ref.free_blocks(buffer_metadata)
 
     async def _do_transfer_inner(
         self, scheduler: XavierScheduler, virtual_engine: int, local: Set[int], remote: Dict[int, Set[Tuple[int, int, int]]]
@@ -247,6 +247,7 @@ class XavierEngineHook(EngineHook):
             # After the transfer is completed, update the corresponding metadata.
             scheduler._transfer_status[seq_group] = local
             for _id in local:
+                logger.info(f"scheduler.block_manager type: {type(scheduler.block_manager)}")
                 scheduler.block_manager.set_block_status_by_block_id(
                     "transferred", _id, True
                 )
@@ -496,6 +497,7 @@ class XavierEngineHook(EngineHook):
             )
 
             for _, _id in executed_blocks_details:
+                logger.info(f"Register block {_id} to rank {rank}")
                 scheduler.block_manager.set_block_status_by_block_id(
                     "executed", _id, True
                 )

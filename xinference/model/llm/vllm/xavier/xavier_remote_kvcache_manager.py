@@ -23,7 +23,6 @@ from vllm.worker.cache_engine import CacheEngine
 
 from .block_tracker import VLLMBlockTracker
 from .transfer import TransferActor
-from .executor import XavierExecutor
 from .remote_kvcache_manager import RemoteKVCacheManager
 
 logger = getLogger(__name__)
@@ -39,8 +38,8 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
     async def setup(
         self,
         xavier_config: Dict[str, Any],
-        transfer_metadata: Dict[str, Any],
-        block_tracker_metadata: Dict[str, Any],
+        transfer_metadata: Dict[str, Any] = None,
+        block_tracker_metadata: Dict[str, Any] = None,
     ):
         """
         Lazy setup actor reference with transfer actor and tracker actor.
@@ -55,25 +54,25 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
                 address=transfer_address, uid=f"{TransferActor.default_uid()}-{rank}"
             )
 
-            # Setup with transfer actor metadata.
-            if transfer_metadata is not None:
-                cache_engine = transfer_metadata.get("cache_engine")
-                scheduler = transfer_metadata.get("scheduler")
-                num_buffer = transfer_metadata.get("num_buffer")
-                buffer_shape = transfer_metadata.get("buffer_shape")
-                buffer_dtype = transfer_metadata.get("buffer_dtype")
-                buffer_device = transfer_metadata.get("buffer_device")
-                pin_memory = transfer_metadata.get("pin_memory")
+        # Setup with transfer actor metadata.
+        if transfer_metadata is not None and self._transfer_ref is not None:
+            cache_engine = transfer_metadata.get("cache_engine")
+            scheduler = transfer_metadata.get("scheduler")
+            num_buffer = transfer_metadata.get("num_buffer")
+            buffer_shape = transfer_metadata.get("buffer_shape")
+            buffer_dtype = transfer_metadata.get("buffer_dtype")
+            buffer_device = transfer_metadata.get("buffer_device")
+            pin_memory = transfer_metadata.get("pin_memory")
 
-                self._transfer_ref.setup(
-                    cache_engine,
-                    scheduler,
-                    num_buffer=num_buffer,
-                    buffer_shape=buffer_shape,
-                    buffer_dtype=buffer_dtype,
-                    buffer_device=buffer_device,
-                    pin_memory=pin_memory,
-                )
+            self._transfer_ref.setup(
+                cache_engine,
+                scheduler,
+                num_buffer=num_buffer,
+                buffer_shape=buffer_shape,
+                buffer_dtype=buffer_dtype,
+                buffer_device=buffer_device,
+                pin_memory=pin_memory,
+            )
 
         # Get block tracker actor reference.
         if self._block_tracker_ref is None:
@@ -86,7 +85,7 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
             )
 
 
-    def register_blocks(
+    async def register_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ):
         """
@@ -108,7 +107,7 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
             rank,
         )
 
-    def write_blocks(
+    async def write_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]], cache_data: List[torch.Tensor]
     ):
         """
@@ -121,7 +120,7 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         # In P2P xavier, we do not need to write cache to anywhere.
         pass
 
-    def query_blocks(
+    async def query_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ) -> List[Dict[str, Union[str, int]]]:
         """
@@ -139,12 +138,13 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
             for content_hash, block_id in cache_metadatas
         ]
 
-        return self._block_tracker_ref.query_blocks(
+        res =  await self._block_tracker_ref.query_blocks(
             virtual_engine,
             executed_blocks_details,
         )
+        return res
 
-    def read_blocks(
+    async def read_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]]
     ) -> Tuple[torch.Tensor, Dict[int, int], Dict[str, int]]:
         """
@@ -162,12 +162,13 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         remote_block_metadata = cache_metadata.get("remote_block_metadata")
         src_to_dst: Dict[int, int] = {x[1]: x[2] for x in remote_block_metadata}
 
-        return self._transfer_ref.read_blocks(
+        res = self._transfer_ref.read_blocks(
             from_rank,
             src_to_dst
         )
+        return res
 
-    def free_blocks(
+    async def free_blocks(
         self, buffer_metadata:  Dict[str, int]
     ):
         """
@@ -179,7 +180,7 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         self._transfer_ref.free_buffer_index(cpu_buf_index_dict)
 
 
-    def unregister_blocks(
+    async def unregister_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ):
         """
@@ -199,7 +200,7 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
                 block_id,
             )
 
-    def remove_blocks(
+    async def remove_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ):
         """
