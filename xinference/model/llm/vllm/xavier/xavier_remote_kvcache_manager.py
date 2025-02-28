@@ -64,7 +64,7 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
             buffer_device = transfer_metadata.get("buffer_device")
             pin_memory = transfer_metadata.get("pin_memory")
 
-            self._transfer_ref.setup(
+            await self._transfer_ref.setup(
                 cache_engine,
                 scheduler,
                 num_buffer=num_buffer,
@@ -101,7 +101,7 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
             for content_hash, block_id in cache_metadatas
         ]
 
-        self._block_tracker_ref.register_blocks(
+        await self._block_tracker_ref.register_blocks(
             virtual_engine,
             executed_blocks_details,
             rank,
@@ -162,7 +162,7 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         remote_block_metadata = cache_metadata.get("remote_block_metadata")
         src_to_dst: Dict[int, int] = {x[1]: x[2] for x in remote_block_metadata}
 
-        res = self._transfer_ref.read_blocks(
+        res = await self._transfer_ref.read_blocks(
             from_rank,
             src_to_dst
         )
@@ -177,7 +177,7 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         buffer_metadata: a dict of buffer metadata, maybe contains cpu_buf_index and so on.
         """
         cpu_buf_index_dict = buffer_metadata.get("cpu_buf_index_dict")
-        self._transfer_ref.free_buffer_index(cpu_buf_index_dict)
+        await self._transfer_ref.free_buffer_index(cpu_buf_index_dict)
 
 
     async def unregister_blocks(
@@ -194,7 +194,7 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         for cache_metadata in cache_metadatas:
             rank = cache_metadata.get("rank")
             block_id = cache_metadata.get("block_id")
-            self._block_tracker_ref.unregister_block(
+            await self._block_tracker_ref.unregister_block(
                 virtual_engine,
                 rank,
                 block_id,

@@ -496,7 +496,8 @@ class XavierEngineHook(EngineHook):
                 cache_metadatas,
             )
 
-            for _, _id in executed_blocks_details:
+            for executed_block in executed_blocks_details:
+                _id = executed_block["block_id"]
                 logger.info(f"Register block {_id} to rank {rank}")
                 scheduler.block_manager.set_block_status_by_block_id(
                     "executed", _id, True
