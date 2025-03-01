@@ -1,23 +1,17 @@
 import asyncio
 from collections import deque
 import logging
-from typing import Any, Deque, Dict, List, Set, Tuple, Union
+from typing import Any, Dict, List, Set, Tuple, Union
 
 import torch
-import xoscar as xo
-from vllm.executor.gpu_executor import GPUExecutorAsync
-from vllm.model_executor.layers.sampler import SamplerOutput
-from vllm.sequence import ExecuteModelRequest, PoolerOutput
+from vllm.sequence import ExecuteModelRequest
 from vllm.utils import is_pin_memory_available
 from vllm.core.block.interfaces import Block
-from vllm.utils import TORCH_DTYPE_TO_NUMPY_DTYPE, Device
+from vllm.utils import Device
 from vllm.core.scheduler import SchedulerOutputs, ScheduledSequenceGroup
 from vllm.worker.cache_engine import CacheEngine
 from vllm.sequence import (
-    SequenceData,
     SequenceGroup,
-    SequenceGroupMetadata,
-    SequenceGroupMetadataDelta,
     SequenceStage,
     SequenceStatus,
 )
@@ -25,7 +19,6 @@ from vllm.sequence import (
 from .xavier_remote_kvcache_manager import XavierRemoteKVCacheManager
 from .executor import XavierExecutor
 from .scheduler import XavierScheduler
-from .transfer import TransferActor
 from .scheduler_hook import EngineHook
 
 logger = logging.getLogger(__name__)
@@ -443,7 +436,8 @@ class XavierEngineHook(EngineHook):
     async def pre_execute(
         self,
         executor: XavierExecutor,
-        execute_model_req: ExecuteModelRequest):
+        execute_model_req: ExecuteModelRequest
+    ):
         """
         Collect information about the blocks involved in the execution before the vllm `ModelRunner` executes.
         This information will be used by the tracker after execution to register the locally computed blocks.
@@ -472,7 +466,11 @@ class XavierEngineHook(EngineHook):
         ]
         self._executor_context["executed_blocks_details"] = executed_blocks_details
 
-    async def post_execute(self, executor: XavierExecutor, execute_model_req: ExecuteModelRequest):
+    async def post_execute(
+        self,
+        executor: XavierExecutor,
+        execute_model_req: ExecuteModelRequest
+    ):
         executed_blocks_details = self._executor_context.get("executed_blocks_details", None)
         rank = self._get_rank(executor)
         block_tracker_ref = await self._get_executor_block_tracker_ref(executor)

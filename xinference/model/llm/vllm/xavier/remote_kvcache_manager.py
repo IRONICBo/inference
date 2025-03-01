@@ -11,26 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import random
-from logging import getLogger
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
 import torch
-import xoscar as xo
-
-logger = getLogger(__name__)
 
 
 class RemoteKVCacheManager:
     async def setup(
         self,
         xavier_config: Dict[str, Any],
-        transfer_metadata: Dict[str, Any],
-        block_tracker_metadata: Dict[str, Any],
+        transfer_metadata: Dict[str, Any] = None,
+        block_tracker_metadata: Dict[str, Any] = None,
     ):
         pass
 
-    def register_blocks(
+    async def register_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ):
         """
@@ -41,7 +36,7 @@ class RemoteKVCacheManager:
         """
         pass
 
-    def write_blocks(
+    async def write_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]], cache_data: List[torch.Tensor]
     ):
         """
@@ -53,7 +48,7 @@ class RemoteKVCacheManager:
         """
         pass
 
-    def query_blocks(
+    async def query_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ) -> List[Dict[str, Union[str, int]]]:
         """
@@ -67,7 +62,7 @@ class RemoteKVCacheManager:
         """
         pass
 
-    def read_blocks(
+    async def read_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]]
     ) -> Tuple[torch.Tensor, Dict[int, int], Dict[str, int]]:
         """
@@ -81,7 +76,7 @@ class RemoteKVCacheManager:
         """
         pass
 
-    def free_blocks(
+    async def free_blocks(
         self, buffer_metadata:  Dict[str, int]
     ):
         """
@@ -91,7 +86,7 @@ class RemoteKVCacheManager:
         """
         pass
 
-    def unregister_blocks(
+    async def unregister_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ):
         """
@@ -102,7 +97,7 @@ class RemoteKVCacheManager:
         """
         pass
 
-    def remove_blocks(
+    async def remove_blocks(
         self, engine_metadata: Dict[str, Union[str, int]], cache_metadatas: List[Dict[str, Union[str, int]]]
     ):
         """
