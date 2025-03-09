@@ -282,8 +282,15 @@ class VLLMModel(LLM):
             f"Enable lora: {enable_lora}. Lora count: {max_loras}."
         )
 
+        backend_type = None
         if self._xavier_config is not None:
+            backend_type = self._xavier_config.get("backend_type", None)
+
+        if self._xavier_config is not None and backend_type is not None:
             from .xavier.engine import XavierEngine
+
+            # if backend_type == "datenlord":
+            #     self._model_config.pop("log_level")
 
             # Enabling Xavier means that `enable_prefix_caching` is enabled by default.
             self._model_config.setdefault("enable_prefix_caching", True)

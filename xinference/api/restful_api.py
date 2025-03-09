@@ -953,6 +953,15 @@ class RESTfulAPI(CancelMixin):
         download_hub = payload.get("download_hub", None)
         model_path = payload.get("model_path", None)
         backend_type = payload.get("backend_type", "xavier")
+        datenlord_block_size = payload.get("datenlord_block_size", 126624)
+        datenlord_kv_engine_address = payload.get("datenlord_kv_engine_address", "127.0.0.1:2379")
+        datenlord_log_level = payload.get("datenlord_log_level", "debug")
+
+        datenlord_config = {
+            "block_size": datenlord_block_size,
+            "kv_engine_address": datenlord_kv_engine_address,
+            "log_level": datenlord_log_level,
+        }
 
         exclude_keys = {
             "model_uid",
@@ -973,6 +982,9 @@ class RESTfulAPI(CancelMixin):
             "prefill_replica",
             "decode_replica",
             "backend_type",
+            "datenlord_block_size",
+            "datenlord_kv_engine_address",
+            "datenlord_log_level",
         }
 
         kwargs = {
@@ -1029,6 +1041,7 @@ class RESTfulAPI(CancelMixin):
                 prefill_replica=prefill_replica,
                 decode_replica=decode_replica,
                 backend_type=backend_type,
+                datenlord_config=datenlord_config,
                 n_gpu=n_gpu,
                 request_limits=request_limits,
                 wait_ready=wait_ready,

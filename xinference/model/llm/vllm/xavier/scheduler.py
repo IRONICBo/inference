@@ -71,8 +71,8 @@ class XavierScheduler(Scheduler):
         self.block_manager.xavier_config = xavier_config
         self._xavier_config = xavier_config
 
-        backend_type = self._xavier_config.get("backend_type")
-        if backend_type == "xavier":
+        backend_type = self._xavier_config.get("backend_type", None)
+        if backend_type == "xavier" or backend_type == "datenlord":
             from .xavier_scheduler_hook import XavierEngineHook
             self._scheduler_hook: XavierEngineHook = XavierEngineHook()
         else:

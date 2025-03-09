@@ -932,6 +932,7 @@ class SupervisorActor(xo.StatelessActor):
         prefill_replica: Optional[int] = None,
         decode_replica: Optional[int] = None,
         backend_type: Optional[str] = "xavier",
+        datenlord_config: Optional[Dict] = None,
         n_gpu: Optional[Union[int, str]] = "auto",
         request_limits: Optional[int] = None,
         wait_ready: bool = True,
@@ -998,7 +999,7 @@ class SupervisorActor(xo.StatelessActor):
             and model_engine is not None
             and model_engine.lower() == "vllm"
         )
-        backend_type = kwargs.pop("backend_type", "xavier")
+        # backend_type = kwargs.pop("backend_type", "xavier")
 
         # Disaggregated-related
         enable_disagg: bool = (
@@ -1016,30 +1017,38 @@ class SupervisorActor(xo.StatelessActor):
                 logger.warning(f"Enabling xavier when `replica<=1` is meaningless.")
                 enable_xavier = False
             else:
-                from ..model.llm.vllm.xavier.block_tracker import VLLMBlockTracker
-                from ..model.llm.vllm.xavier.collective_manager import CollectiveManager
+                logger.info(f"Starting xavier for model {model_name} with backend {backend_type}")
+                # Check backend type
+                if backend_type == "xavier":
+                    from ..model.llm.vllm.xavier.block_tracker import VLLMBlockTracker
+                    from ..model.llm.vllm.xavier.collective_manager import CollectiveManager
 
-                self._block_tracker_mapping[model_uid] = await xo.create_actor(
-                    VLLMBlockTracker,
-                    address=self.address,
-                    uid=f"{VLLMBlockTracker.default_uid()}-{model_uid}",
-                )
+                    self._block_tracker_mapping[model_uid] = await xo.create_actor(
+                        VLLMBlockTracker,
+                        address=self.address,
+                        uid=f"{VLLMBlockTracker.default_uid()}-{model_uid}",
+                    )
 
-                #  TODO: this will be removed and replaced by a more general solution,
-                # current default is 3 for 2 worker with 1p1d.
-                if self._role == "disaggregated":
-                    # for 1 p and 1 d, in each one replica
-                    world_size = prefill_replica + decode_replica + 1
-                else:
-                    world_size = replica + 1
-                logger.info(f"Going to start xavier with world size: {world_size}")
-                self._collective_manager_mapping[model_uid] = await xo.create_actor(
-                    CollectiveManager,
-                    address=self.address,
-                    uid=f"{CollectiveManager.default_uid()}-{model_uid}",
-                    model_uid=model_uid,
-                )
-                logger.info(f"Start collective manager for {model_uid} done.")
+                    #  TODO: this will be removed and replaced by a more general solution,
+                    # current default is 3 for 2 worker with 1p1d.
+                    if self._role == "disaggregated":
+                        # for 1 p and 1 d, in each one replica
+                        world_size = prefill_replica + decode_replica + 1
+                    else:
+                        world_size = replica + 1
+                    logger.info(f"Going to start xavier with world size: {world_size}")
+                    self._collective_manager_mapping[model_uid] = await xo.create_actor(
+                        CollectiveManager,
+                        address=self.address,
+                        uid=f"{CollectiveManager.default_uid()}-{model_uid}",
+                        model_uid=model_uid,
+                    )
+                    logger.info(f"Start collective manager for {model_uid} done.")
+                elif backend_type == "datenlord":
+                    if datenlord_config is None:
+                        raise ValueError(
+                            "Datenlord config is required when backend_type is datenlord."
+                        )
 
         model_size = str(model_size_in_billions) if model_size_in_billions else ""
         logger.debug(
@@ -1056,26 +1065,41 @@ class SupervisorActor(xo.StatelessActor):
 
             nonlocal store_address
             nonlocal store_port
-            xavier_config = (
-                {
-                    "block_tracker_uid": self._block_tracker_mapping[model_uid].uid,
-                    "block_tracker_address": self._block_tracker_mapping[
-                        model_uid
-                    ].address,
-                    "rank": rank,
-                    "world_size": world_size,
-                    "store_address": store_address,
-                    "store_port": store_port,
-                    "backend_type": backend_type,
-                }
-                if enable_xavier
-                else None
-            )
+            xavier_config = {}
+            if backend_type == "xavier":
+                xavier_config = (
+                    {
+                        "block_tracker_uid": self._block_tracker_mapping[model_uid].uid,
+                        "block_tracker_address": self._block_tracker_mapping[
+                            model_uid
+                        ].address,
+                        "rank": rank,
+                        "world_size": world_size,
+                        "store_address": store_address,
+                        "store_port": store_port,
+                        "backend_type": backend_type,
+                        "datenlord_config": datenlord_config,
+                    }
+                    if enable_xavier
+                    else None
+                )
+            elif backend_type == "datenlord":
+                xavier_config = (
+                    {
+                        "backend_type": backend_type,
+                        "datenlord_block_size": datenlord_config.get("block_size", None),
+                        "datenlord_kv_engine_address": datenlord_config.get("kv_engine_address", None),
+                        "datenlord_log_level": datenlord_config.get("log_level", None),
+                    }
+                    if enable_xavier
+                    else None
+                )
             logger.info(
                 f"Launching model {_replica_model_uid} on worker {worker_ref.address} with xavier config: {xavier_config}"
             )
 
-            if enable_xavier and rank == 0:
+            # Create rank0 in xavier backend
+            if enable_xavier and rank == 0 and backend_type == "xavier":
                 rank0_address, _port = await worker_ref.launch_rank0_model(
                     _replica_model_uid, xavier_config
                 )
@@ -1136,7 +1160,7 @@ class SupervisorActor(xo.StatelessActor):
                         Start the rank 0 model actor on the supervisor that holds the rank 1 replica,
                         solely for constructing the collective communication world.
                         """
-                        if rank == 0:
+                        if rank == 0 and backend_type == "xavier":
                             _uid = model_uid + "-rank0"
                             rank0_address = await _launch_one_model(worker_ref, _uid, rank)
                             worker_refs.append((worker_ref, _uid))
@@ -1204,7 +1228,6 @@ class SupervisorActor(xo.StatelessActor):
                 # because the transfer actor needs all the rank addresses used for collective communication
                 if enable_xavier:
                     logger.debug(f"Init transfer component for xavier...")
-                    collective_manager_ref = self._collective_manager_mapping[model_uid]
                     tasks = []
                     for worker_ref, rep_model_uid in worker_refs:
                         tasks.append(
@@ -1216,11 +1239,13 @@ class SupervisorActor(xo.StatelessActor):
                     # or you will get stuck.
                     await asyncio.gather(*tasks)
 
-                    # init collective_manager
-                    for idx, addr in enumerate(rank_addresses):
-                        await collective_manager_ref.register_rank(
-                            idx, addr, update=False
-                        )
+                    if backend_type == "xavier":
+                        collective_manager_ref = self._collective_manager_mapping[model_uid]
+                        # init collective_manager
+                        for idx, addr in enumerate(rank_addresses):
+                            await collective_manager_ref.register_rank(
+                                idx, addr, update=False
+                            )
 
                     logger.debug(f"Init transfer component for xavier done.")
             except Exception:

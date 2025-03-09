@@ -313,20 +313,26 @@ class ModelActor(xo.StatelessActor, CancelMixin):
 
         assert isinstance(self._model, VLLMModel)
         rank = self._xavier_config.get("rank")  # type: ignore
-        self._transfer_ref = await xo.create_actor(
-            TransferActor,
-            address=self.address,
-            uid=f"{TransferActor.default_uid()}-{rank}",
-            rank=rank,
-            world_size=self._xavier_config.get("world_size"),  # type: ignore
-            rank_address=self._xavier_config.get("rank_address"),  # type: ignore
-            store_address=self._xavier_config.get("store_address"),  # type: ignore
-            store_port=self._xavier_config.get("store_port"),  # type: ignore
-            world_addresses=rank_addresses,
-        )
+        backend_type = self._xavier_config.get("backend_type", None)
+        if backend_type == "xavier":
+            self._transfer_ref = await xo.create_actor(
+                TransferActor,
+                address=self.address,
+                uid=f"{TransferActor.default_uid()}-{rank}",
+                rank=rank,
+                world_size=self._xavier_config.get("world_size"),  # type: ignore
+                rank_address=self._xavier_config.get("rank_address"),  # type: ignore
+                store_address=self._xavier_config.get("store_address"),  # type: ignore
+                store_port=self._xavier_config.get("store_port"),  # type: ignore
+                world_addresses=rank_addresses,
+            )
+            logger.debug(
+                f"Init transfer actor: {self._transfer_ref.address}, rank: {rank} done for vllm."  # type: ignore
+            )
+
         await self._model.init_xavier()
         logger.debug(
-            f"Init transfer actor: {self._transfer_ref.address}, rank: {rank} done for vllm."  # type: ignore
+            f"Init xavier for vllm model: {self._replica_model_uid} done with xavier config {self._xavier_config}"
         )
 
     async def _record_completion_metrics(

@@ -37,14 +37,14 @@ class RemoteKVCacheManager:
         pass
 
     async def write_blocks(
-        self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]], cache_data: List[torch.Tensor]
+        self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]], cache_data: List[List[torch.Tensor]]
     ):
         """
         Used to write cache data to the storage.
 
         engine_metadata: virtual engine for llm backend, used to choose engine by
         cache_metadata: key value for this kvcache metadata, maybe contains hash_content, prefix promopt and so on.
-        cache_data: a list of kvcache data, espically for decoder llm each layer.
+        cache_data: a list of kvcache data, espically for decoder llm each layer, blockid -> layer -> tensor
         """
         pass
 

@@ -1,7 +1,7 @@
 import asyncio
 from collections import deque
 import logging
-from typing import Any, Dict, List, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import torch
 from vllm.sequence import ExecuteModelRequest
@@ -16,7 +16,9 @@ from vllm.sequence import (
     SequenceStatus,
 )
 
+from .remote_kvcache_manager import RemoteKVCacheManager
 from .xavier_remote_kvcache_manager import XavierRemoteKVCacheManager
+from .datenlord_remote_kvcache_manager import DatenlordRemoteKVCacheManager
 from .executor import XavierExecutor
 from .scheduler import XavierScheduler
 from .scheduler_hook import EngineHook
@@ -48,14 +50,32 @@ class XavierEngineHook(EngineHook):
 
     async def _get_scheduler_block_tracker_ref(self, scheduler: XavierScheduler) -> XavierRemoteKVCacheManager:
         if scheduler._block_tracker_ref is None:
-            scheduler._block_tracker_ref = XavierRemoteKVCacheManager()
-            await scheduler._block_tracker_ref.setup(scheduler._xavier_config)
+            backend_type = self._get_backend_type(scheduler._xavier_config)
+            if backend_type == "xavier":
+                scheduler._block_tracker_ref = XavierRemoteKVCacheManager()
+                await scheduler._block_tracker_ref.setup(scheduler._xavier_config)
+            elif backend_type == "datenlord":
+                scheduler._block_tracker_ref = DatenlordRemoteKVCacheManager()
+                await scheduler._block_tracker_ref.setup(scheduler._xavier_config)
+            else:
+                logger.error("No backend type specified, use default backend type: xavier")
+                raise ValueError("No backend type specified, use default backend type: xavier")
+
         return scheduler._block_tracker_ref
 
     async def _get_scheduler_transfer_ref(self, scheduler: XavierScheduler) -> XavierRemoteKVCacheManager:
         if scheduler._transfer_ref is None:
-            scheduler._transfer_ref = XavierRemoteKVCacheManager()
-            await scheduler._transfer_ref.setup(scheduler._xavier_config)
+            backend_type = self._get_backend_type(scheduler._xavier_config)
+            if backend_type == "xavier":
+                scheduler._transfer_ref = XavierRemoteKVCacheManager()
+                await scheduler._transfer_ref.setup(scheduler._xavier_config)
+            elif backend_type == "datenlord":
+                scheduler._transfer_ref = DatenlordRemoteKVCacheManager()
+                await scheduler._transfer_ref.setup(scheduler._xavier_config)
+            else:
+                logger.error("No backend type specified, use default backend type: xavier")
+                raise ValueError("No backend type specified, use default backend type: xavier")
+
         return scheduler._transfer_ref
 
     async def _get_transfer_details(
@@ -155,6 +175,23 @@ class XavierEngineHook(EngineHook):
         for _id in block_ids:
             gpu_allocator._refcounter.decr(_id)
 
+    async def _swap_out_blocks(
+        self, cache_engine: CacheEngine, block_ids: List[int]
+    ) -> List[List[torch.Tensor]]:
+        logger.debug(f"Swap out blocks {block_ids} from cache engine.")
+        cache_data = []
+        for block_id in block_ids:
+            layer_data = []
+            for i in range(self._num_attn_layers):
+                # This only contains one block
+                layer_data.append(cache_engine.gpu_cache[i][:, block_id, :].clone())
+            cache_data.append(layer_data)
+            logger.debug(
+                f"Swap out block {block_id} from cache engine with data shape {layer_data[0].shape}."
+            )
+
+        return cache_data
+
     def _swap_in_from_buffer(
         self, cache_engine: CacheEngine, cpu_buf: torch.Tensor, block_ids: List[int]
     ) -> None:
@@ -184,6 +221,7 @@ class XavierEngineHook(EngineHook):
 
         engine_metadata = {
             "virtual_engine": virtual_engine,
+            "layer_num": self._num_attn_layers,
         }
         cache_metadata: List[Dict[str, Union[str, int]]] = [{
             "from_rank": from_rank,
@@ -261,6 +299,13 @@ class XavierEngineHook(EngineHook):
         scheduled_seq_group: ScheduledSequenceGroup,
         block_tables: Dict[int, List[int]],
     ) -> bool:
+        # TODO: prefill instance policy here:
+        # max_prefill_tokens, min_prefill_tokens
+        # 1. If current_prefix > max_prefill_tokens, we just skip the prefill stage.
+        # 2. If current_prefix < min_prefill_tokens, we need to calculate and fill tokens.
+        # 3. If min_prefill_tokens <= current_prefix <= max_tokens, we need to load the blocks from
+        # remote and continute the remaining tokens.
+
         """Xinference Change!!!
         Additional data structures required by Xavier. Clean current context here.
         """
@@ -378,16 +423,41 @@ class XavierEngineHook(EngineHook):
         """
         pass
 
-    async def _get_executor_block_tracker_ref(self, executor: XavierExecutor) -> XavierRemoteKVCacheManager:
+    async def _get_executor_block_tracker_ref(self, executor: XavierExecutor) -> RemoteKVCacheManager:
         if executor._block_tracker_ref is None:
-            executor._block_tracker_ref = XavierRemoteKVCacheManager()
-            await executor._block_tracker_ref.setup(executor.vllm_config.xavier_config)
+            backend_type = self._get_backend_type(executor.vllm_config.xavier_config)
+            if backend_type == "xavier":
+                executor._block_tracker_ref = XavierRemoteKVCacheManager()
+                await executor._block_tracker_ref.setup(executor.vllm_config.xavier_config)
+            elif backend_type == "datenlord":
+                executor._block_tracker_ref = DatenlordRemoteKVCacheManager()
+                await executor._block_tracker_ref.setup(executor.vllm_config.xavier_config)
+            else:
+                logger.error("No backend type specified, use default backend type: xavier")
+                raise ValueError("No backend type specified, use default backend type: xavier")
+
         return executor._block_tracker_ref
 
-    async def _get_executor_transfer_ref(self, executor: XavierExecutor) -> XavierRemoteKVCacheManager:
-        if executor._transfer_ref is None:
-            executor._transfer_ref = XavierRemoteKVCacheManager()
-            await executor._transfer_ref.setup(executor.vllm_config.xavier_config)
+    def _get_backend_type(self, xavier_config: Dict) -> Optional[str]:
+        backend_type = xavier_config.get("backend_type", None)
+        if backend_type == None:
+            logger.error("No backend type specified, use default backend type: xavier")
+            return None
+        return backend_type
+
+    async def _get_executor_transfer_ref(self, executor: XavierExecutor) -> RemoteKVCacheManager:
+        if executor._block_tracker_ref is None:
+            backend_type = self._get_backend_type(executor.vllm_config.xavier_config)
+            if backend_type == "xavier":
+                executor._transfer_ref = XavierRemoteKVCacheManager()
+                await executor._transfer_ref.setup(executor.vllm_config.xavier_config)
+            elif backend_type == "datenlord":
+                executor._transfer_ref = DatenlordRemoteKVCacheManager()
+                await executor._transfer_ref.setup(executor.vllm_config.xavier_config)
+            else:
+                logger.error("No backend type specified, use default backend type: xavier")
+                raise ValueError("No backend type specified, use default backend type: xavier")
+
         return executor._transfer_ref
 
     async def post_execute_init(self, executor: XavierExecutor):
@@ -395,40 +465,53 @@ class XavierEngineHook(EngineHook):
         In vllm, the `cache_engine` is the entity that truly manages the KV cache tensors.
         Retrieve the necessary transmission information from the `cache_engine`.
         """
-        transfer_ref = await self._get_executor_transfer_ref(executor)
+        backend_type = executor.vllm_config.xavier_config.get("backend_type", None)
+        if backend_type == None:
+            logger.error("No backend type specified, use default backend type: datenlord")
+            return
+
         ref_cache_engine: CacheEngine = executor.driver_worker.cache_engine[0]
         buffer_dtype = ref_cache_engine.dtype
-        buffer_device = "cpu"
-        buffer_pin_memory = is_pin_memory_available()
         num_attn_layers = ref_cache_engine.num_attention_layers
         kv_cache_shape = ref_cache_engine.gpu_cache[0].shape
-        assert kv_cache_shape[0] == 2
-        buffer_num = 2
-        transfer_block_num = executor.vllm_config.xavier_config.get("transfer_block_num")
-        buffer_shape = (
-            transfer_block_num,
-            num_attn_layers,
-            kv_cache_shape[0],
-            *kv_cache_shape[2:],
-        )
-
         self._num_attn_layers = num_attn_layers
         self._cache_engine = executor.driver_worker.cache_engine
 
-        transfer_metadata = {
-            "cache_engine": executor.driver_worker.cache_engine,
-            "scheduler": executor.scheduler,
-            "num_buffer": buffer_num,
-            "buffer_shape": buffer_shape,
-            "buffer_dtype": buffer_dtype,
-            "buffer_device": buffer_device,
-            "pin_memory": buffer_pin_memory,
-        }
+        if backend_type == "xavier":
+            transfer_ref = await self._get_executor_transfer_ref(executor)
+            buffer_device = "cpu"
+            buffer_pin_memory = is_pin_memory_available()
+            assert kv_cache_shape[0] == 2
+            buffer_num = 2
+            transfer_block_num = executor.vllm_config.xavier_config.get("transfer_block_num")
+            buffer_shape = (
+                transfer_block_num,
+                num_attn_layers,
+                kv_cache_shape[0],
+                *kv_cache_shape[2:],
+            )
 
-        await transfer_ref.setup(
-            xavier_config=executor.vllm_config.xavier_config,
-            transfer_metadata=transfer_metadata,
-        )
+
+            transfer_metadata = {
+                "cache_engine": executor.driver_worker.cache_engine,
+                "scheduler": executor.scheduler,
+                "num_buffer": buffer_num,
+                "buffer_shape": buffer_shape,
+                "buffer_dtype": buffer_dtype,
+                "buffer_device": buffer_device,
+                "pin_memory": buffer_pin_memory,
+            }
+
+            await transfer_ref.setup(
+                xavier_config=executor.vllm_config.xavier_config,
+                transfer_metadata=transfer_metadata,
+            )
+
+        if backend_type == "datenlord":
+            transfer_ref = await self._get_executor_transfer_ref(executor)
+            await transfer_ref.setup(
+                xavier_config=executor.vllm_config.xavier_config,
+            )
 
     def _get_rank(self, executor: XavierExecutor) -> int:
         return executor.vllm_config.xavier_config.get("rank")
@@ -465,6 +548,7 @@ class XavierEngineHook(EngineHook):
             for content_hash, block_id in executed_blocks_details
         ]
         self._executor_context["executed_blocks_details"] = executed_blocks_details
+        logger.info(f"Executed blocks details: {executed_blocks_details}")
 
     async def post_execute(
         self,
@@ -486,12 +570,24 @@ class XavierEngineHook(EngineHook):
             engine_metadata = {
                 "virtual_engine": virtual_engine,
                 "rank": rank,
+                "layer_num": self._num_attn_layers,
             }
             cache_metadatas = executed_blocks_details
 
             await block_tracker_ref.register_blocks(
                 engine_metadata,
                 cache_metadatas,
+            )
+
+            block_ids = [
+                block["block_id"] for block in executed_blocks_details
+            ]
+            cache_datas = await self._swap_out_blocks(self._cache_engine[virtual_engine], block_ids)
+
+            await block_tracker_ref.write_blocks(
+                engine_metadata,
+                cache_metadatas,
+                cache_datas,
             )
 
             for executed_block in executed_blocks_details:
