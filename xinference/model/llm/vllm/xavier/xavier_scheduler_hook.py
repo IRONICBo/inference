@@ -7,6 +7,7 @@ import torch
 from vllm.sequence import ExecuteModelRequest
 from vllm.utils import is_pin_memory_available
 from vllm.core.block.interfaces import Block
+from vllm.core.scheduler import Scheduler
 from vllm.utils import Device
 from vllm.core.scheduler import SchedulerOutputs, ScheduledSequenceGroup
 from vllm.worker.cache_engine import CacheEngine
@@ -34,6 +35,7 @@ class XavierEngineHook(EngineHook):
         self._scheduler_context: Dict[str, Any] = {}
         self._swap_stream = torch.cuda.Stream()
         self._num_attn_layers = 0
+        self._scheduler: Optional[List[Scheduler]] = None
 
     def post_scheduler_init(self, scheduler: XavierScheduler):
         scheduler._block_tracker_ref = None
@@ -476,6 +478,7 @@ class XavierEngineHook(EngineHook):
         kv_cache_shape = ref_cache_engine.gpu_cache[0].shape
         self._num_attn_layers = num_attn_layers
         self._cache_engine = executor.driver_worker.cache_engine
+        self._scheduler = executor.scheduler
 
         if backend_type == "xavier":
             transfer_ref = await self._get_executor_transfer_ref(executor)

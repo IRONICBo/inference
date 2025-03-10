@@ -134,8 +134,8 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         """
         virtual_engine = engine_metadata.get("virtual_engine")
         executed_blocks_details = [
-            (content_hash, block_id)
-            for content_hash, block_id in cache_metadatas
+            (metadata['content_hash'], metadata['block_id'])
+            for metadata in cache_metadatas
         ]
 
         res =  await self._block_tracker_ref.query_blocks(

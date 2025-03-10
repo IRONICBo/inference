@@ -129,13 +129,15 @@ class DatenlordRemoteKVCacheManager(RemoteKVCacheManager):
         logger.debug(f"Query blocks in DatenlordRemoteKVCacheManager with engine_metadata: {engine_metadata} and cache_metadata: {cache_metadatas}")
         virtual_engine = engine_metadata.get("virtual_engine")
         executed_blocks_details = [
-            (content_hash, local_block_id)
-            for content_hash, local_block_id in cache_metadatas
+            (metadata['content_hash'], metadata['block_id'])
+            for metadata in cache_metadatas
         ]
         logger.debug(f"Query blocks in DatenlordRemoteKVCacheManager with content hash {executed_blocks_details}")
 
         res = []
         for content_hash, local_block_id in executed_blocks_details:
+            content_hash = str(content_hash)
+            content_hash = [ord(char) for char in content_hash]
             prefx = await self._datenlord_sdk.match_prefix(content_hash)
             if prefx is not None:
                 # Append to data, returned prefix and -1 is not used.
