@@ -22,6 +22,9 @@ from vllm.core.block.prefix_caching_block import (
     PrefixCachingBlockAllocator,
 )
 
+
+from .remote_kvcache_manager import RemoteKVCacheManager
+from .datenlord_remote_kvcache_manager import DatenlordRemoteKVCacheManager
 from .xavier_remote_kvcache_manager import XavierRemoteKVCacheManager
 
 from .....isolation import Isolation
@@ -77,10 +80,27 @@ class XavierPrefixCachingBlockAllocator(PrefixCachingBlockAllocator):
     def xavier_config(self, v: Dict[str, Any]):
         self._xavier_config = v
 
-    async def _get_block_tracker_ref(self) -> XavierRemoteKVCacheManager:
+    def _get_backend_type(self, xavier_config: Dict) -> Optional[str]:
+        backend_type = xavier_config.get("backend_type", None)
+        if backend_type == None:
+            logger.error("No backend type specified, use default backend type: xavier")
+            return None
+        return backend_type
+
+    async def _get_block_tracker_ref(self) -> RemoteKVCacheManager:
         if self._block_tracker_ref is None:
-            self._block_tracker_ref = XavierRemoteKVCacheManager()
-            await self._block_tracker_ref.setup(xavier_config=self.xavier_config)
+            backend_type = self._get_backend_type(self.xavier_config)
+            logger.debug(f"Xavier scheduler backend type: {backend_type}")
+            if backend_type == "xavier":
+                self._block_tracker_ref = XavierRemoteKVCacheManager()
+                await self._block_tracker_ref.setup(xavier_config=self.xavier_config)
+            elif backend_type == "datenlord":
+                self._block_tracker_ref = DatenlordRemoteKVCacheManager()
+                await self._block_tracker_ref.setup(xavier_config=self.xavier_config)
+            else:
+                logger.error("No backend type specified, use default backend type: xavier")
+                raise ValueError("No backend type specified, use default backend type: xavier")
+
         return self._block_tracker_ref
 
     async def unregister_block(self, block_id: int):

@@ -35,6 +35,7 @@ class XavierEngineHook(EngineHook):
         self._scheduler_context: Dict[str, Any] = {}
         self._swap_stream = torch.cuda.Stream()
         self._num_attn_layers = 0
+        self._cache_engine = None
         self._scheduler: Optional[List[Scheduler]] = None
 
     def post_scheduler_init(self, scheduler: XavierScheduler):
@@ -53,6 +54,7 @@ class XavierEngineHook(EngineHook):
     async def _get_scheduler_block_tracker_ref(self, scheduler: XavierScheduler) -> XavierRemoteKVCacheManager:
         if scheduler._block_tracker_ref is None:
             backend_type = self._get_backend_type(scheduler._xavier_config)
+            logger.debug(f"Xavier scheduler backend type: {backend_type}")
             if backend_type == "xavier":
                 scheduler._block_tracker_ref = XavierRemoteKVCacheManager()
                 await scheduler._block_tracker_ref.setup(scheduler._xavier_config)
@@ -68,6 +70,7 @@ class XavierEngineHook(EngineHook):
     async def _get_scheduler_transfer_ref(self, scheduler: XavierScheduler) -> XavierRemoteKVCacheManager:
         if scheduler._transfer_ref is None:
             backend_type = self._get_backend_type(scheduler._xavier_config)
+            logger.debug(f"Xavier scheduler backend type: {backend_type}")
             if backend_type == "xavier":
                 scheduler._transfer_ref = XavierRemoteKVCacheManager()
                 await scheduler._transfer_ref.setup(scheduler._xavier_config)
@@ -146,7 +149,7 @@ class XavierEngineHook(EngineHook):
                     local.add(local_block_id)
             if local:
                 logger.debug(
-                    f"Data in local blocks: {local} will be transmitted from the remote."
+                    f"Data in local blocks: {local} will be transmitted from the remote {remote}."
                 )
             return local, remote
         else:
@@ -161,6 +164,10 @@ class XavierEngineHook(EngineHook):
         The reference count of the `block_id` involved in the transfer is incremented by 1
         to ensure it is not reclaimed.
         """
+        if self._scheduler is None:
+            # Skip if current scheduler context is not initialized.
+            return
+
         scheduler = self._scheduler[virtual_engine]  # type: ignore
         gpu_allocator = scheduler.block_manager.block_allocator._allocators[Device.GPU]
 
@@ -171,6 +178,10 @@ class XavierEngineHook(EngineHook):
         """
         After the transfer, the reference count is decremented by 1.
         """
+        if self._scheduler is None:
+            # Skip if current scheduler context is not initialized.
+            return
+
         scheduler = self._scheduler[virtual_engine]  # type: ignore
         gpu_allocator = scheduler.block_manager.block_allocator._allocators[Device.GPU]
 
@@ -217,6 +228,10 @@ class XavierEngineHook(EngineHook):
         local: Set[int],
         remote_block_metadata: Dict[int, int],
     ):
+        if self._cache_engine is None:
+            # Skip if current cache engine context is not initialized.
+            return
+
         block_ids = list(local)
         self._incr_count_for_block_id(virtual_engine, block_ids)
         cache_engine = self._cache_engine[virtual_engine]
@@ -225,10 +240,10 @@ class XavierEngineHook(EngineHook):
             "virtual_engine": virtual_engine,
             "layer_num": self._num_attn_layers,
         }
-        cache_metadata: List[Dict[str, Union[str, int]]] = [{
+        cache_metadata: Dict[str, Union[str, int]] = {
             "from_rank": from_rank,
             "remote_block_metadata": remote_block_metadata,
-        }]
+        }
 
         try:
             recvbuf, recv_block_ids, cpu_buf_index = transfer_ref.read_blocks(engine_metadata, cache_metadata)
@@ -263,7 +278,8 @@ class XavierEngineHook(EngineHook):
             The exception here is most likely due to the sender triggering recovery during the transmission process.
             In this case, fallback to performing computation during the prefill stage.
             """
-            logger.error(f"Transfer failed: {e}")
+            import traceback
+            logger.error(f"Transfer failed: {e} {traceback.format_exc()}")
             # Force this `seq_group` to perform computation.
             seq_group.force_calculation = True
             scheduler._transfer_status.pop(seq_group, None)
@@ -307,6 +323,11 @@ class XavierEngineHook(EngineHook):
         # 2. If current_prefix < min_prefill_tokens, we need to calculate and fill tokens.
         # 3. If min_prefill_tokens <= current_prefix <= max_tokens, we need to load the blocks from
         # remote and continute the remaining tokens.
+
+        # Print current queue info
+        logger.info(f"scheduler.waiting: {scheduler.waiting}")
+        logger.info(f"scheduler.running: {scheduler.running}")
+        logger.info(f"scheduler._transferring: {scheduler._transferring}")
 
         """Xinference Change!!!
         Additional data structures required by Xavier. Clean current context here.
@@ -428,6 +449,7 @@ class XavierEngineHook(EngineHook):
     async def _get_executor_block_tracker_ref(self, executor: XavierExecutor) -> RemoteKVCacheManager:
         if executor._block_tracker_ref is None:
             backend_type = self._get_backend_type(executor.vllm_config.xavier_config)
+            logger.debug(f"Get executor block tracker ref with backend type: {backend_type}")
             if backend_type == "xavier":
                 executor._block_tracker_ref = XavierRemoteKVCacheManager()
                 await executor._block_tracker_ref.setup(executor.vllm_config.xavier_config)
@@ -450,6 +472,7 @@ class XavierEngineHook(EngineHook):
     async def _get_executor_transfer_ref(self, executor: XavierExecutor) -> RemoteKVCacheManager:
         if executor._block_tracker_ref is None:
             backend_type = self._get_backend_type(executor.vllm_config.xavier_config)
+            logger.debug(f"Get executor transfer ref with backend type: {backend_type}")
             if backend_type == "xavier":
                 executor._transfer_ref = XavierRemoteKVCacheManager()
                 await executor._transfer_ref.setup(executor.vllm_config.xavier_config)
