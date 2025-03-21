@@ -1237,15 +1237,19 @@ class WorkerActor(xo.StatelessActor):
         is_xavier: bool = xavier_config is not None
         supervisor_ref = await self.get_supervisor_ref(add_worker=False)
         if is_xavier:
-            rank = xavier_config.get("rank")
-            await supervisor_ref.call_collective_manager(
-                origin_uid, "unregister_rank", rank
-            )
+            backend_type = xavier_config.get("backend_type")
+            if backend_type == "xavier":
+                rank = xavier_config.get("rank")
+                await supervisor_ref.call_collective_manager(
+                    origin_uid, "unregister_rank", rank
+                )
         subpool_address = await self.launch_builtin_model(**launch_args)
         if is_xavier:
+            backend_type = xavier_config.get("backend_type")
             model_ref = self._model_uid_to_model[rep_model_uid]
             await model_ref.start_transfer_for_vllm([])
-            rank = xavier_config.get("rank")
-            await supervisor_ref.call_collective_manager(
-                origin_uid, "register_rank", rank, subpool_address, update=True
-            )
+            if backend_type == "xavier":
+                rank = xavier_config.get("rank")
+                await supervisor_ref.call_collective_manager(
+                    origin_uid, "register_rank", rank, subpool_address, update=True
+                )

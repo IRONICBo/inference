@@ -34,7 +34,7 @@ class XavierEngineHook(EngineHook):
         self._executor_context: Dict[str, Any] = {}
         self._scheduler_context: Dict[str, Any] = {}
         self._swap_stream = torch.cuda.Stream()
-        self._num_attn_layers = 0
+        self._num_attn_layers = None
         self._cache_engine = None
         self._scheduler: Optional[List[Scheduler]] = None
 
@@ -51,7 +51,7 @@ class XavierEngineHook(EngineHook):
             "has_transferring": False,
         }
 
-    async def _get_scheduler_block_tracker_ref(self, scheduler: XavierScheduler) -> XavierRemoteKVCacheManager:
+    async def _get_scheduler_block_tracker_ref(self, scheduler: XavierScheduler) -> RemoteKVCacheManager:
         if scheduler._block_tracker_ref is None:
             backend_type = self._get_backend_type(scheduler._xavier_config)
             logger.debug(f"Xavier scheduler backend type: {backend_type}")
@@ -67,7 +67,7 @@ class XavierEngineHook(EngineHook):
 
         return scheduler._block_tracker_ref
 
-    async def _get_scheduler_transfer_ref(self, scheduler: XavierScheduler) -> XavierRemoteKVCacheManager:
+    async def _get_scheduler_transfer_ref(self, scheduler: XavierScheduler) -> RemoteKVCacheManager:
         if scheduler._transfer_ref is None:
             backend_type = self._get_backend_type(scheduler._xavier_config)
             logger.debug(f"Xavier scheduler backend type: {backend_type}")
@@ -214,7 +214,7 @@ class XavierEngineHook(EngineHook):
             dtype=torch.int64,
         ).view(-1, 2)
         with torch.cuda.stream(self._swap_stream):
-            for i in range(self.num_attn_layers):
+            for i in range(self._num_attn_layers):
                 cache_engine.attn_backend.swap_blocks(
                     cpu_buf[i], cache_engine.gpu_cache[i], src_to_dst
                 )
@@ -222,7 +222,7 @@ class XavierEngineHook(EngineHook):
 
     async def _swap_to_cache_engine(
         self,
-        transfer_ref: XavierRemoteKVCacheManager,
+        transfer_ref: RemoteKVCacheManager,
         virtual_engine: int,
         from_rank: int,
         local: Set[int],
@@ -244,9 +244,13 @@ class XavierEngineHook(EngineHook):
             "from_rank": from_rank,
             "remote_block_metadata": remote_block_metadata,
         }
+        cpu_buf_index = None
 
         try:
-            recvbuf, recv_block_ids, cpu_buf_index = transfer_ref.read_blocks(engine_metadata, cache_metadata)
+            recvbuf, recv_block_ids, cpu_buf_index = await transfer_ref.read_blocks(engine_metadata, cache_metadata)
+            logger.debug(
+                f"Read blocks {recv_block_ids} from remote {from_rank} with data shape {len(recvbuf)}."
+            )
             self._swap_in_from_buffer(cache_engine, recvbuf, recv_block_ids)
         finally:
             self._decr_count_for_block_id(virtual_engine, block_ids)
@@ -291,12 +295,13 @@ class XavierEngineHook(EngineHook):
             if unpin_handle is not None:
                 await unpin_handle.free_prefill_model_cache(seq_group.request_id)
             scheduler.remove_unpin_handle(seq_group.request_id)
+            logger.info(f"[_do_transfer error]Unpin prefill instance kvcache for request_id {seq_group.request_id}")
 
         else:
             # After the transfer is completed, update the corresponding metadata.
             scheduler._transfer_status[seq_group] = local
             for _id in local:
-                logger.info(f"scheduler.block_manager type: {type(scheduler.block_manager)}")
+                logger.info(f"Transfer done with {seq_group} in local {local}")
                 scheduler.block_manager.set_block_status_by_block_id(
                     "transferred", _id, True
                 )
@@ -310,6 +315,7 @@ class XavierEngineHook(EngineHook):
             if unpin_handle is not None:
                 await unpin_handle.free_prefill_model_cache(seq_group.request_id)
             scheduler.remove_unpin_handle(seq_group.request_id)
+            logger.info(f"[_do_transfer success]Unpin prefill instance kvcache for request_id {seq_group.request_id}")
 
     async def pre_scheduler_prefill(
         self,
@@ -375,6 +381,7 @@ class XavierEngineHook(EngineHook):
                 )
                 # The `seq_group` that is currently being transferred enters a new queue.
                 scheduler._transferring.append(seq_group)
+                logger.info(f"scheduler._transferring: {scheduler._transferring}")
                 self._scheduler_context["has_transferring"] = True
                 return True
             else:
@@ -502,6 +509,10 @@ class XavierEngineHook(EngineHook):
         self._num_attn_layers = num_attn_layers
         self._cache_engine = executor.driver_worker.cache_engine
         self._scheduler = executor.scheduler
+        # Update scheduler hook with cache engine.
+        for scheduler in executor.scheduler:
+            scheduler._scheduler_hook._cache_engine = executor.driver_worker.cache_engine
+            scheduler._scheduler_hook._num_attn_layers = num_attn_layers
 
         if backend_type == "xavier":
             transfer_ref = await self._get_executor_transfer_ref(executor)
@@ -610,11 +621,19 @@ class XavierEngineHook(EngineHook):
             ]
             cache_datas = await self._swap_out_blocks(self._cache_engine[virtual_engine], block_ids)
 
-            await block_tracker_ref.write_blocks(
-                engine_metadata,
-                cache_metadatas,
-                cache_datas,
-            )
+            # Write data with 3 seconds timeout, if current operation is not finished,
+            # it will raise TimeoutError.
+            try:
+                await asyncio.wait_for(
+                    block_tracker_ref.write_blocks(
+                        engine_metadata,
+                        cache_metadatas,
+                        cache_datas,
+                    ),
+                    timeout=1
+                )
+            except asyncio.TimeoutError:
+                logger.warning("write_blocks operation timed out after 3 seconds, skipping to next logic.")
 
             for executed_block in executed_blocks_details:
                 _id = executed_block["block_id"]

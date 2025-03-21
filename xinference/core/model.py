@@ -1244,11 +1244,16 @@ class PDModelActor(xo.StatelessActor, CancelMixin):
         model_uid: str,
         prefill_model: xo.ActorRefType["ModelActor"],
         decode_model: xo.ActorRefType["ModelActor"],
+        max_concurrent_requests: int = 2,
     ):
         self._model_uid = model_uid
         self._prefill_model = prefill_model
         self._decode_model = decode_model
-        logger.info(f"Initialize PDModelActor with prefill model: {prefill_model} and decode model: {decode_model}")
+        self.max_concurrent_requests = max_concurrent_requests
+        self.request_set = set()
+        self._is_health = True
+        self.lock = asyncio.Lock()
+        logger.info(f"Initialize PDModelActor with prefill model: {prefill_model} and decode model: {decode_model} with max_concurrent_requests: {max_concurrent_requests}")
 
     async def __post_create__(self):
         pass
@@ -1262,23 +1267,43 @@ class PDModelActor(xo.StatelessActor, CancelMixin):
         self._decode_model.decrease_serve_count()
         self._prefill_model.decrease_serve_count()
 
+    def is_health(self):
+        return self._is_health
+
+    def set_model_ref(self,
+                      prefill_model: xo.ActorRefType["ModelActor"],
+                      decode_model: xo.ActorRefType["ModelActor"]
+                    ):
+        self._prefill_model = prefill_model
+        self._prefill_model = decode_model
+        self._is_health = True
+
     @log_async(logger=logger)
     async def free_prefill_model_cache(self, request_id: str):
-        logger.debug(f"[PDModelActor] Free prefill model cache for request {request_id}")
-        await self._prefill_model.free_model_cache(request_id)
+        async with self.lock:
+            logger.debug(f"[PDModelActor] Free prefill model cache for request {request_id}")
+            await self._prefill_model.free_model_cache(request_id)
+
+            if request_id in self.request_set:
+                self.request_set.remove(request_id)
 
     @xo.generator
     @log_async(logger=logger)
     async def generate(self, prompt: str, *args, **kwargs):
-        if "request_id" not in kwargs:
-            global_request_id = uuid.uuid4().hex
-            kwargs['request_id'] = global_request_id
-            logger.debug(f"[request {global_request_id}] Enter PDModelActor generate")
+        try:
+            if "request_id" not in kwargs:
+                global_request_id = uuid.uuid4().hex
+                kwargs['request_id'] = global_request_id
+                logger.debug(f"[request {global_request_id}] Enter PDModelActor generate")
 
-        await self._prefill_model.generate(prompt, *args, **kwargs)
-        await self._decode_model.set_unpin_handle(self._model_uid, global_request_id, self.address)
+            await self._prefill_model.generate(prompt, *args, **kwargs)
+            await self._decode_model.set_unpin_handle(self._model_uid, global_request_id, self.address)
 
-        # Async clean the prefill cache in the background.
-        asyncio.create_task(asyncio.wait_for(self.free_prefill_model_cache(global_request_id), timeout=3))
+            # Async clean the prefill cache in the background.
+            asyncio.create_task(asyncio.wait_for(self.free_prefill_model_cache(global_request_id), timeout=3))
 
-        return await self._decode_model.generate(prompt, *args, **kwargs)
+            return await self._decode_model.generate(prompt, *args, **kwargs)
+        except Exception as e:
+            logger.error(f"[request {kwargs['request_id']}] Error in PDModelActor generate: {e}")
+            self._is_health = False
+            raise e

@@ -92,10 +92,9 @@ class DatenlordRemoteKVCacheManager(RemoteKVCacheManager):
 
         # Write data to remote storage.
         for idx, metadata in enumerate(cache_metadata):
-
             import io
             buf = io.BytesIO()
-            for layer_data in enumerate(cache_data[idx]):
+            for _, layer_data in enumerate(cache_data[idx]):
                 torch.save(layer_data, buf)
             # TODO: replace with promot token ids
             content_hash = metadata.get("content_hash", None)
@@ -139,9 +138,13 @@ class DatenlordRemoteKVCacheManager(RemoteKVCacheManager):
             content_hash = str(content_hash)
             content_hash = [ord(char) for char in content_hash]
             prefx = await self._datenlord_sdk.match_prefix(content_hash)
-            if prefx is not None:
+            # Make sure current size is not 0
+            if prefx is not None and len(prefx) != 0:
                 # Append to data, returned prefix and -1 is not used.
                 res.append((prefx, -1 ,local_block_id))
+
+        if len(res) == 0:
+            return {}
 
         # Default rank is datenlord
         return {'datenlord': res}
@@ -169,13 +172,20 @@ class DatenlordRemoteKVCacheManager(RemoteKVCacheManager):
         remote_block_metadata = cache_metadata.get("remote_block_metadata")
 
         recvbuf = [[] for _ in range(layer_num)]
-        block_hash_to_dst: Dict[int, int] = {x[0]: x[2] for x in remote_block_metadata}
+        dst_to_block_hash: Dict[int, int] = {x[2]: x[0] for x in remote_block_metadata}
+        # block_hash_to_dst: Dict[int, int] = {x[0]: x[2] for x in remote_block_metadata}
         recv_block_ids = []
-        for block_hash, dst in block_hash_to_dst.items():
+        # for block_hash, dst in block_hash_to_dst.items():
+        for dst, block_hash in dst_to_block_hash.items():
             logger.debug(f"Read blocks in DatenlordRemoteKVCacheManager with block_hash: {block_hash} and dst: {dst}")
-            content_hash = str(content_hash)
-            content_hash = [ord(char) for char in content_hash]
+            # content_hash = str(content_hash)
+            # content_hash = [ord(char) for char in content_hash]
+            content_hash = block_hash
+            logger.debug(f"Read blocks in DatenlordRemoteKVCacheManager with content hash {content_hash}")
             matched_key, data = await self._datenlord_sdk.try_load(content_hash)
+            data = memoryview(data).tobytes()
+            logger.debug(f"Read blocks in DatenlordRemoteKVCacheManager with matched_key: {matched_key} and data size: {len(data)}")
+            # TODO
             layer_size = len(data) // layer_num
             if matched_key is not None and matched_key == content_hash:
                 import io

@@ -145,7 +145,7 @@ class XavierRemoteKVCacheManager(RemoteKVCacheManager):
         return res
 
     async def read_blocks(
-        self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: List[Dict[str, Union[str, int]]]
+        self, engine_metadata: Dict[str, Union[str, int]], cache_metadata: Dict[str, Union[str, int]]
     ) -> Tuple[torch.Tensor, Dict[int, int], Dict[str, int]]:
         """
         Used to read cache metadata from remote storage, these data will be read at the buffer in self._buffer

@@ -1440,6 +1440,30 @@ class SupervisorActor(xo.StatelessActor):
         return self._role
 
     @log_async(logger=logger)
+
+    async def get_available_model_ref(self, model_uid: str, role: Optional[str] = "decode") -> xo.ActorRefType["ModelActor"]:
+        replica_info = self._model_uid_to_replica_info.get(model_uid, None)
+        if replica_info is None:
+            raise ValueError(f"Model not found in the model list, uid: {model_uid}")
+
+        model_ref = None
+        for idx in range(replica_info.replica*2):
+            replica_model_uid = build_replica_model_uid(
+                model_uid, idx
+            )
+            logger.debug(f"Get model from worker with _replica_model_uid_to_worker: {self._replica_model_uid_to_worker} with role: {role}")
+
+            worker_ref = self._replica_model_uid_to_worker.get(replica_model_uid, None)
+            if worker_ref is None:
+                continue
+
+            worker_status = self._worker_status.get(worker_ref.address)
+            if worker_status.status['labels'].role == role:
+                model_ref = await worker_ref.get_model(model_uid=replica_model_uid)
+                break
+        return model_ref
+
+    @log_async(logger=logger)
     async def get_disagg_model(self, model_uid: str) -> xo.ActorRefType["PDModelActor"]:
         # TODO: add disagg model into mapping, we do not need to recreate the actor.
         # Make sure the model name is raw
@@ -1452,51 +1476,29 @@ class SupervisorActor(xo.StatelessActor):
         # Get model from disagg model
         disagg_model_ref = self._model_uid_to_disagg_model.get(model_uid, None)
         if disagg_model_ref is not None:
-            return disagg_model_ref
+            if await disagg_model_ref.is_health() == True:
+                return disagg_model_ref
 
         # get prefill and decode worker
         # TODO: add prefill and decode models into mapping
-        prefill_model_ref = None
-        for idx in range(replica_info.replica*2):
-            replica_model_uid = build_replica_model_uid(
-                model_uid, idx
-            )
-            logger.debug(f"Get model from worker with _replica_model_uid_to_worker: {self._replica_model_uid_to_worker}")
-
-            worker_ref = self._replica_model_uid_to_worker.get(replica_model_uid, None)
-            if worker_ref is None:
-                continue
-
-            worker_status = self._worker_status.get(worker_ref.address)
-            if worker_status.status['labels'].role == "prefill":
-                prefill_model_ref = await worker_ref.get_model(model_uid=replica_model_uid)
-                break
+        prefill_model_ref = await self.get_available_model_ref(model_uid, "prefill")
 
         if prefill_model_ref is None:
             raise ValueError(
                 f"Prefill model not found in the model list, uid: {model_uid}"
             )
 
-        decode_model_ref = None
-        for idx in range(replica_info.replica*2):
-            replica_model_uid = build_replica_model_uid(
-                model_uid, idx
-            )
-            logger.debug(f"Get model from worker with _replica_model_uid_to_worker: {self._replica_model_uid_to_worker}")
-
-            worker_ref = self._replica_model_uid_to_worker.get(replica_model_uid, None)
-            if worker_ref is None:
-                continue
-
-            worker_status = self._worker_status.get(worker_ref.address)
-            if worker_status.status['labels'].role == "decode":
-                decode_model_ref = await worker_ref.get_model(model_uid=replica_model_uid)
-                break
+        decode_model_ref = await self.get_available_model_ref(model_uid, "decode")
 
         if decode_model_ref is None:
             raise ValueError(
                 f"Decode model not found in the model list, uid: {model_uid}"
             )
+
+        # Replace model with health one
+        if disagg_model_ref is not None:
+            await disagg_model_ref.set_model_ref(prefill_model_ref, decode_model_ref)
+            return disagg_model_ref
 
         pd_model_ref = await xo.create_actor(
             PDModelActor,
