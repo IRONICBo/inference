@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from abc import ABC, abstractmethod
 import asyncio
 import functools
 import inspect
+import itertools
 import json
 import os
 import queue
@@ -1211,6 +1213,26 @@ class ModelActor(xo.StatelessActor, CancelMixin):
         return self._pending_requests.qsize()
 
 
+class SchedulingPolicy(ABC):
+
+    @abstractmethod
+    def schedule(self, cycle):
+        raise NotImplementedError("Scheduling Proxy is not set.")
+
+class RoundRobinSchedulingPolicy(SchedulingPolicy):
+
+    def __init__(self, model_replicas: List[xo.ActorRefType["ModelActor"]]):
+        self._model_replicas = model_replicas
+        self._model_replicas_cycle = itertools.cycle(self._model_replicas)
+        super().__init__()
+
+    def schedule(self) -> xo.ActorRefType["ModelActor"]:
+        a = next(self._model_replicas_cycle)
+        print("current model actor:", a.id)
+        print("current model actor call_count:", a.generate.call_count)
+        return a
+
+
 class PDModelActor(xo.StatelessActor, CancelMixin):
     @classmethod
     def default_uid(cls):
@@ -1218,12 +1240,16 @@ class PDModelActor(xo.StatelessActor, CancelMixin):
 
     def __init__(
         self,
-        prefill_model: xo.ActorRefType["ModelActor"],
-        decode_model: xo.ActorRefType["ModelActor"],
+        prefill_model_actors: List[xo.ActorRefType["ModelActor"]],
+        decode_model_actors: List[xo.ActorRefType["ModelActor"]],
     ):
-        self._prefill_model = prefill_model
-        self._decode_model = decode_model
-        logger.info(f"Initialize PDModelActor with prefill model: {prefill_model} and decode model: {decode_model}")
+        self._prefill_model_actors = prefill_model_actors
+        self._decode_model_actors = decode_model_actors
+
+        self._prefill_round_robin = RoundRobinSchedulingPolicy(self._prefill_model_actors)
+        self._decode_round_robin = RoundRobinSchedulingPolicy(self._decode_model_actors)
+
+        logger.info(f"Initialize PDModelActor with prefill models: {prefill_model_actors} and decode models: {decode_model_actors}")
 
     async def __post_create__(self):
         pass
@@ -1231,15 +1257,19 @@ class PDModelActor(xo.StatelessActor, CancelMixin):
         pass
 
     def __repr__(self) -> str:
-        return f"PDModelActor(Prefill Model: {self._prefill_model} Decode Model: {self._decode_model})"
+        return f"PDModelActor(Prefill Model: {self._prefill_model_actors} Decode Model: {self._decode_model_actors})"
 
     def decrease_serve_count(self):
-        self._decode_model.decrease_serve_count()
-        self._prefill_model.decrease_serve_count()
+        for model in self._prefill_model_actors:
+            model.decrease_serve_count()
+        for model in self._decode_model_actors:
+            model.decrease_serve_count()
 
     @xo.generator
     @log_async(logger=logger)
     async def generate(self, prompt: str, *args, **kwargs):
-        await self._prefill_model.generate(prompt, *args, **kwargs)
+        prefill_model = self._prefill_round_robin.schedule()
+        await prefill_model.generate(prompt, *args, **kwargs)
 
-        return await self._decode_model.generate(prompt, *args, **kwargs)
+        decode_model = self._decode_round_robin.schedule()
+        return await decode_model.generate(prompt, *args, **kwargs)

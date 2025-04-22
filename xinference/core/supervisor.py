@@ -374,7 +374,16 @@ class SupervisorActor(xo.StatelessActor):
             if role is not None:
                 worker_status = self._worker_status.get(worker.address)
                 if worker_status.status['labels'].role == role:
-                    target_worker = worker
+                    running_model_count = await worker.get_model_count()
+                    if (
+                        min_running_model_count is None
+                        or running_model_count < min_running_model_count
+                    ):
+                        min_running_model_count = running_model_count
+                        # Choose the worker with the least running model count.
+                        target_worker = worker
+                # target_worker = worker
+                # Check if current worker does not have been chosen.
             else:
                 running_model_count = await worker.get_model_count()
                 if (
@@ -1404,7 +1413,11 @@ class SupervisorActor(xo.StatelessActor):
     @log_async(logger=logger)
     async def get_disagg_model(self, model_uid: str) -> xo.ActorRefType["PDModelActor"]:
         # Make sure the model name is raw
-        model_uid = parse_replica_model_uid(model_uid)[0]
+        # Model name is qwen2.5-instruct-1, we need to get the -1 in the model name
+        # model_uid = parse_replica_model_uid(model_uid)[0]
+        # Raw name, do not need to parse it.
+        model_uid = model_uid
+
         # Get model from decode worker
         replica_info = self._model_uid_to_replica_info.get(model_uid, None)
         if replica_info is None:
@@ -1412,6 +1425,7 @@ class SupervisorActor(xo.StatelessActor):
 
         # get prefill and decode worker
         # TODO: add prefill and decode models into mapping
+        prefill_model_refs = []
         prefill_model_ref = None
         for idx in range(replica_info.replica*2):
             replica_model_uid = build_replica_model_uid(
@@ -1426,13 +1440,15 @@ class SupervisorActor(xo.StatelessActor):
             worker_status = self._worker_status.get(worker_ref.address)
             if worker_status.status['labels'].role == "prefill":
                 prefill_model_ref = await worker_ref.get_model(model_uid=replica_model_uid)
-                break
+                # break
+                prefill_model_refs.append(prefill_model_ref)
 
         if prefill_model_ref is None:
             raise ValueError(
                 f"Prefill model not found in the model list, uid: {model_uid}"
             )
 
+        decode_model_refs = []
         decode_model_ref = None
         for idx in range(replica_info.replica*2):
             replica_model_uid = build_replica_model_uid(
@@ -1447,7 +1463,8 @@ class SupervisorActor(xo.StatelessActor):
             worker_status = self._worker_status.get(worker_ref.address)
             if worker_status.status['labels'].role == "decode":
                 decode_model_ref = await worker_ref.get_model(model_uid=replica_model_uid)
-                break
+                # break
+                decode_model_refs.append(decode_model_ref)
 
         if decode_model_ref is None:
             raise ValueError(
@@ -1458,8 +1475,8 @@ class SupervisorActor(xo.StatelessActor):
             PDModelActor,
             uid=gen_random_string(8),
             address=self.address,
-            prefill_model=prefill_model_ref,
-            decode_model=decode_model_ref,
+            prefill_model=prefill_model_refs,
+            decode_model=decode_model_refs,
         )
 
         return pd_model_ref

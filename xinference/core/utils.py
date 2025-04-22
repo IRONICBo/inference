@@ -176,6 +176,7 @@ def parse_replica_model_uid(replica_model_uid: str) -> Tuple[str, int]:
     """
     Parse replica model uid to model uid and rep id.
     """
+    print(f"parse_replica_model_uid: {replica_model_uid}")
     parts = replica_model_uid.split("-")
     if len(parts) == 1:
         return replica_model_uid, -1

@@ -36,6 +36,9 @@ class VLLMBlockTracker(xo.StatelessActor):
     def register_blocks(
         self, virtual_engine: int, block_infos: List[Tuple[int, int]], rank: int
     ):
+        # For test, ignore all blocks
+        return
+
         logger.debug(
             f"Register blocks: virtual_engine={virtual_engine}, block_infos={block_infos}, rank={rank}"
         )
@@ -94,6 +97,9 @@ class VLLMBlockTracker(xo.StatelessActor):
         return remote
 
     def unregister_block(self, virtual_engine: int, rank: int, block_id: int):
+        # For test, ignore all blocks
+        return
+
         if (virtual_engine not in self._rank_to_hash_and_block_id) or (
             virtual_engine not in self._hash_to_rank_and_block_id
         ):
